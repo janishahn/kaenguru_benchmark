@@ -1,4 +1,4 @@
-# Kaenguru Benchmark
+# Känguru Benchmark
 
 This project aims to build a Large Language Model (LLM) benchmark based on the Math Kangaroo competition, providing a challenging and diverse set of mathematical problems for evaluating LLM capabilities.
 

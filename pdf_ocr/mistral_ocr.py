@@ -61,22 +61,14 @@ def setup_logging(main_output_dir: Path, verbose: bool = False) -> None:
     
     log_file = log_dir / "ocr_processing.log"
     
-    # Configure logging
-    console_level = logging.DEBUG if verbose else logging.INFO
-    
+    # Configure logging: only file handler, no console output
     logging.basicConfig(
         level=logging.DEBUG,
         format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
         handlers=[
-            logging.FileHandler(log_file),
-            logging.StreamHandler()
+            logging.FileHandler(log_file)
         ]
     )
-    
-    # Set console handler level
-    for handler in logging.getLogger().handlers:
-        if isinstance(handler, logging.StreamHandler):
-            handler.setLevel(console_level)
 
 def setup_output_directories(main_output_dir: Path) -> Dict[str, Path]:
     """
@@ -486,6 +478,7 @@ def main():
             process_pdf(pdf_path, client, output_dirs, is_batch=is_batch)
 
     logging.info("\nOCR processing finished.")
+    print("OCR processing complete.")
 
 
 if __name__ == "__main__":

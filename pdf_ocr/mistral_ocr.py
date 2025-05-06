@@ -33,7 +33,8 @@ except ImportError:
 
 # --- Configuration ---
 
-# Best practice: Load API key from environment variable
+if DOTENV_AVAILABLE:
+    load_dotenv()
 MISTRAL_API_KEY = os.getenv("MISTRAL_API_KEY")
 
 # Define output directory names relative to the project root
@@ -94,10 +95,10 @@ def setup_output_directories(main_output_dir: Path) -> Dict[str, Path]:
     return dirs
 
 def format_image_filename(base_filename: str, page_idx: int, img_idx: int, ext: str) -> str:
-    """Format image filename consistently across the application."""
+    """Format image filename consistently across the script."""
     return f"{base_filename}_page_{page_idx+1}_img_{img_idx+1}.{ext}"
 
-def parse_json_to_markdown(response: OCRResponse, base_filename: str, image_paths: Dict[int, Dict[int, str]]) -> str:
+def parse_json_to_markdown(response: OCRResponse, image_paths: Dict[int, Dict[int, str]]) -> str:
     """
     Parses the Mistral OCRResponse JSON structure into a continuous Markdown string.
 
@@ -105,8 +106,6 @@ def parse_json_to_markdown(response: OCRResponse, base_filename: str, image_path
     ----------
     response : OCRResponse
         The OCRResponse object from the Mistral API.
-    base_filename : str
-        Base filename for image path replacement.
     image_paths : Dict[int, Dict[int, str]]
         Dictionary mapping page and image indices to their saved paths.
 
@@ -166,10 +165,6 @@ def parse_json_to_markdown(response: OCRResponse, base_filename: str, image_path
             
             # Sort by position in the document
             img_replacements.sort(key=lambda x: x['start'])
-            
-            # For each image on the page, find the correct global index
-            page_image_indices = {img_idx: idx + 1 for idx, img in enumerate(all_images) 
-                                if img['page_idx'] == page_idx and img['img_idx'] in image_paths[page_idx]}
             
             # Apply replacements from end to start to preserve positions
             for replacement_idx, replacement in enumerate(reversed(img_replacements)):
@@ -359,7 +354,7 @@ def process_pdf(pdf_path: Path, client: Mistral, output_dirs: Dict[str, Path], i
 
         # Extract markdown with updated image paths
         try:
-            markdown_content = parse_json_to_markdown(response, base_filename, image_paths)
+            markdown_content = parse_json_to_markdown(response, image_paths)
             with open(markdown_output_path, "w", encoding="utf-8") as f_md:
                 f_md.write(markdown_content)
             logging.debug(f"Saved Markdown output")

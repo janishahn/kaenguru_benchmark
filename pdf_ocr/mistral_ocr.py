@@ -49,7 +49,7 @@ LOG_DIR_NAME = "logs"
 def setup_logging(main_output_dir: Path, verbose: bool = False) -> None:
     """
     Setup logging configuration.
-    
+
     Parameters
     ----------
     main_output_dir : Path
@@ -59,17 +59,34 @@ def setup_logging(main_output_dir: Path, verbose: bool = False) -> None:
     """
     log_dir = main_output_dir / LOG_DIR_NAME
     log_dir.mkdir(parents=True, exist_ok=True)
-    
+
     log_file = log_dir / "ocr_processing.log"
-    
-    # Configure logging: only file handler, no console output
-    logging.basicConfig(
-        level=logging.DEBUG,
-        format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-        handlers=[
-            logging.FileHandler(log_file)
-        ]
-    )
+
+    # Configure logging with both file and console handlers
+    console_handler = logging.StreamHandler()
+    # Set console level based on verbose flag
+    console_handler.setLevel(logging.DEBUG if verbose else logging.WARNING)
+    file_handler = logging.FileHandler(log_file)
+    file_handler.setLevel(logging.DEBUG)  # File always gets debug level
+
+    formatter = logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s")
+    console_handler.setFormatter(formatter)
+    file_handler.setFormatter(formatter)
+
+    # Get the root logger
+    root_logger = logging.getLogger()
+    # Set root logger level to DEBUG so file handler gets everything
+    root_logger.setLevel(logging.DEBUG)
+    # Remove any default handlers
+    if root_logger.hasHandlers():
+        root_logger.handlers.clear()
+    # Add our configured handlers
+    root_logger.addHandler(console_handler)
+    root_logger.addHandler(file_handler)
+
+    # Suppress httpx info logs unless verbose
+    httpx_logger = logging.getLogger("httpx")
+    httpx_logger.setLevel(logging.DEBUG if verbose else logging.WARNING)
 
 def setup_output_directories(main_output_dir: Path) -> Dict[str, Path]:
     """
@@ -260,7 +277,7 @@ def save_images(response: OCRResponse, output_dir: Path, base_filename: str) -> 
             image_paths[page_idx] = page_images
 
     if total_images > 0:
-        logging.info(f"Saved {total_images} image(s)")
+        logging.debug(f"Saved {total_images} image(s)")
     else:
         logging.info(f"No images extracted from the document")
         
@@ -286,17 +303,6 @@ def process_pdf(pdf_path: Path, client: Mistral, output_dirs: Dict[str, Path], i
     bool
         True if processing was successful, False otherwise
     """
-    # Set console log level for this function
-    if is_batch:
-        console_handler = None
-        for handler in logging.getLogger().handlers:
-            if isinstance(handler, logging.StreamHandler):
-                console_handler = handler
-                handler.setLevel(logging.INFO)  # Only show important messages on console
-    
-    if not is_batch:
-        logging.info(f"\nProcessing '{pdf_path.name}'...")
-    
     base_filename = pdf_path.stem
     json_output_path = output_dirs["json"] / f"{base_filename}_ocr_result.json"
     markdown_output_path = output_dirs["markdown"] / f"{base_filename}_ocr_result.md"
@@ -371,10 +377,6 @@ def process_pdf(pdf_path: Path, client: Mistral, output_dirs: Dict[str, Path], i
             except Exception:
                 pass
         success = False
-
-    # Restore console log level if this was a batch operation
-    if is_batch and console_handler:
-        console_handler.setLevel(logging.INFO)
         
     return success
 
@@ -413,8 +415,9 @@ def main():
     # Setup logging
     setup_logging(main_output_dir, args.verbose)
     
-    logging.info(f"Project Root Directory: {project_root_dir}")
-    logging.info(f"Output will be saved under: {main_output_dir}")
+    if args.verbose:
+        logging.info(f"Project Root Directory: {project_root_dir}")
+        logging.info(f"Output will be saved under: {main_output_dir}")
 
     input_path_arg = Path(args.input_path)
     input_path = input_path_arg.resolve()
@@ -431,22 +434,26 @@ def main():
             logging.error(f"Input file '{args.input_path}' is not a PDF file.")
             exit(1)
     elif input_path.is_dir():
-        logging.info(f"Scanning directory '{input_path}' for PDF files...")
+        if args.verbose:
+            logging.info(f"Scanning directory '{input_path}' for PDF files...")
         pdf_files_to_process = sorted(list(input_path.glob("*.pdf")))
         if not pdf_files_to_process:
             logging.info(f"No PDF files found in directory '{input_path}'.")
             exit(0)
-        logging.info(f"Found {len(pdf_files_to_process)} PDF file(s).")
+        if args.verbose:
+            logging.info(f"Found {len(pdf_files_to_process)} PDF file(s).")
     else:
         logging.error(f"Input path '{args.input_path}' is neither a file nor a directory.")
         exit(1)
 
     output_dirs = setup_output_directories(main_output_dir)
-    logging.info("Output directories ensured.")
+    if args.verbose:
+        logging.info("Output directories ensured.")
 
     try:
         client = Mistral(api_key=MISTRAL_API_KEY)
-        logging.info("Mistral client initialized.")
+        if args.verbose:
+            logging.info("Mistral client initialized.")
     except Exception as e:
         logging.error(f"Error initializing Mistral client: {e}")
         exit(1)
@@ -461,18 +468,17 @@ def main():
         total = len(pdf_files_to_process)
         with tqdm(total=total, desc="Processing PDFs", unit="file") as pbar:
             for pdf_path in pdf_files_to_process:
-                logging.info(f"Processing ({pbar.n+1}/{total}): {pdf_path.name}")
                 if process_pdf(pdf_path, client, output_dirs, is_batch=True):
                     successes += 1
                 pbar.update(1)
         
-        logging.info(f"Successfully processed {successes}/{total} files")
+        print(f"Successfully processed {successes}/{total} files")
     else:
         # Process files without tqdm
         for pdf_path in pdf_files_to_process:
+            print(f"\nProcessing '{pdf_path.name}'...")
             process_pdf(pdf_path, client, output_dirs, is_batch=is_batch)
 
-    logging.info("\nOCR processing finished.")
     print("OCR processing complete.")
 
 

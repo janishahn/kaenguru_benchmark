@@ -38,7 +38,7 @@ if DOTENV_AVAILABLE:
 MISTRAL_API_KEY = os.getenv("MISTRAL_API_KEY")
 
 # Define output directory names relative to the project root
-OUTPUT_BASE_DIR_NAME = "output"
+OUTPUT_BASE_DIR_NAME = "ocr_output"
 JSON_OUTPUT_DIR_NAME = "ocr_json"
 IMAGE_OUTPUT_DIR_NAME = "ocr_images"
 MARKDOWN_OUTPUT_DIR_NAME = "ocr_markdown"

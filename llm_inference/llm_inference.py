@@ -119,12 +119,46 @@ def filter_multimodal_items(df: pd.DataFrame) -> pd.DataFrame:
     initial_count = len(df)
     logging.info(f"Initial dataset size: {initial_count} items")
     
-    # Filter rows where image_paths is empty or None
-    filtered_df = df[df['image_paths'].apply(lambda x: len(x) == 0 if isinstance(x, list) else True)]
+    def has_images(x):
+        # Handle None case
+        if x is None:
+            return False
+            
+        # Handle string representation of list
+        if isinstance(x, str):
+            try:
+                # Try to evaluate as a list if it looks like a string representation
+                if x.startswith('[') and x.endswith(']'):
+                    x = eval(x)
+                else:
+                    return False
+            except:
+                return False
+                
+        # Handle actual list
+        if isinstance(x, list):
+            return len(x) > 0
+            
+        # Handle other sequence types
+        if hasattr(x, '__len__'):
+            return len(x) > 0
+            
+        # Log unexpected type
+        logging.warning(f"Unexpected type for image_paths: {type(x)}")
+        return False
+    
+    # Filter rows where image_paths is empty
+    filtered_df = df[~df['image_paths'].apply(has_images)]
     
     final_count = len(filtered_df)
     logging.info(f"Filtered dataset size: {final_count} items")
     logging.info(f"Removed {initial_count - final_count} multimodal items")
+    
+    # Log some examples of filtered items for debugging
+    if initial_count - final_count > 0:
+        sample_filtered = df[df['image_paths'].apply(has_images)].head(3)
+        for _, row in sample_filtered.iterrows():
+            logging.info(f"Filtered item example - ID: {row['id']}, image_paths type: {type(row['image_paths'])}, value: {row['image_paths']}")
     
     return filtered_df
 
@@ -193,6 +227,7 @@ def prepare_request_body(model: str, prompt: str, max_tokens: int, is_reasoning:
         ],
         "temperature": 0.7,
         "max_tokens": effective_max_tokens,
+        "usage": {"include": True},  # Include usage information in response
         # "seed": 42,  # Random seed for reproducibility
         # "response_format": {"type": "text"},  # Force text response format
     }
@@ -469,12 +504,15 @@ def extract_answer_from_response(response: Dict[str, Any]) -> str:
     return "ERROR"
 
 
-def process_results(
+def process_results_with_progress(
     results: List[Dict[str, Any]],
     df: pd.DataFrame,
     output_dir: Path
 ) -> pd.DataFrame:
-    """Process results and add model answers to dataframe."""
+    """Process results and add model answers to dataframe with progress bar."""
+    # Create progress bar for processing results
+    pbar = tqdm(total=len(results), desc="Processing results", unit="result")
+    
     # Create a mapping of question IDs to their indices
     id_to_idx = {row['id']: idx for idx, row in df.iterrows()}
     
@@ -484,6 +522,7 @@ def process_results(
     df['response_latency'] = 0.0  # Initialize with 0.0 instead of None
     df['response_status'] = None
     df['was_truncated'] = None
+    df['generation_cost'] = 0.0  # Initialize cost tracking
     
     # Process each result
     for result in results:
@@ -492,10 +531,12 @@ def process_results(
             prompt = result['request']['messages'][0]['content']
             id_match = re.search(r'\[ID: ([^\]]+)\]', prompt)
             if not id_match:
+                pbar.update(1)
                 continue
             
             question_id = id_match.group(1)
             if question_id not in id_to_idx:
+                pbar.update(1)
                 continue
             
             idx = id_to_idx[question_id]
@@ -518,9 +559,19 @@ def process_results(
             
             df.at[idx, 'response_status'] = result['status_code']
             
+            # Extract generation cost if available
+            if 'usage' in result['response'] and 'cost' in result['response']['usage']:
+                df.at[idx, 'generation_cost'] = float(result['response']['usage']['cost'])
+            else:
+                logging.warning(f"Missing cost information for question {question_id}")
+                df.at[idx, 'generation_cost'] = 0.0
+            
         except Exception as e:
             logging.error(f"Error processing result: {e}")
-            continue
+        finally:
+            pbar.update(1)
+    
+    pbar.close()
     
     # Calculate statistics
     total_questions = len(df)
@@ -528,6 +579,7 @@ def process_results(
     correct_answers = df['is_correct'].sum()
     error_answers = (df['model_answer'] == 'ERROR').sum()
     truncated_responses = df['was_truncated'].sum()
+    total_cost = df['generation_cost'].sum()
     
     # Log statistics
     logging.info(f"Total questions: {total_questions}")
@@ -535,6 +587,7 @@ def process_results(
     logging.info(f"Correct answers: {correct_answers}")
     logging.info(f"Error answers: {error_answers}")
     logging.info(f"Truncated responses: {truncated_responses}")
+    logging.info(f"Total generation cost: {total_cost:.2f} cents")
     logging.info(f"Accuracy: {correct_answers/answered_questions:.2%}" if answered_questions > 0 else "Accuracy: N/A")
     
     # Save processed results
@@ -618,12 +671,15 @@ def generate_human_readable_report(
     logging.info(f"Saved detailed text overview to: {txt_path}")
 
 
-def generate_final_outputs(
+def generate_final_outputs_with_progress(
     df: pd.DataFrame,
     results: List[Dict[str, Any]],
     output_dir: Path
 ) -> None:
-    """Generate final output files and metrics."""
+    """Generate final output files and metrics with progress bar."""
+    # Create progress bar for generating outputs
+    pbar = tqdm(total=5, desc="Generating final outputs", unit="file")
+    
     # 1. Generate results.parquet
     results_df = df.copy()
     results_df['latency_ms'] = results_df['response_latency'] * 1000  # Convert to milliseconds
@@ -631,8 +687,10 @@ def generate_final_outputs(
     results_path = output_dir / "results.parquet"
     results_df.to_parquet(results_path)
     logging.info(f"Saved results to: {results_path}")
+    pbar.update(1)
     
     # 2. Generate metrics.json
+    total_cost = float(df['generation_cost'].sum())
     metrics = {
         "overall": {
             "total_questions": int(len(df)),
@@ -644,7 +702,9 @@ def generate_final_outputs(
             "average_latency_ms": float(df['response_latency'].mean() * 1000),
             "p95_latency_ms": float(df['response_latency'].quantile(0.95) * 1000),
             "p99_latency_ms": float(df['response_latency'].quantile(0.99) * 1000),
-            "success_rate": float((df['response_status'] == 200).mean())
+            "success_rate": float((df['response_status'] == 200).mean()),
+            "total_cost_cents": total_cost,
+            "average_cost_per_question": float(df['generation_cost'].mean())
         },
         "per_year": {}
     }
@@ -659,7 +719,9 @@ def generate_final_outputs(
             "truncated_responses": int(year_df['was_truncated'].sum()),
             "accuracy": float(year_df['is_correct'].mean()) if year_df['is_correct'].notna().any() else None,
             "average_latency_ms": float(year_df['response_latency'].mean() * 1000),
-            "success_rate": float((year_df['response_status'] == 200).mean())
+            "success_rate": float((year_df['response_status'] == 200).mean()),
+            "total_cost_cents": float(year_df['generation_cost'].sum()),
+            "average_cost_per_question": float(year_df['generation_cost'].mean())
         }
         metrics["per_year"][str(int(year))] = year_metrics
     
@@ -667,6 +729,7 @@ def generate_final_outputs(
     with open(metrics_path, "w") as f:
         json.dump(metrics, f, indent=2)
     logging.info(f"Saved metrics to: {metrics_path}")
+    pbar.update(1)
     
     # 3. Generate raw_responses.jsonl
     responses_path = output_dir / "raw_responses.jsonl"
@@ -696,7 +759,8 @@ def generate_final_outputs(
                     "response": result['response'],
                     "latency_ms": float(result['latency'] * 1000),
                     "status_code": int(result['status_code']),
-                    "was_truncated": was_truncated
+                    "was_truncated": was_truncated,
+                    "generation_cost": float(result['response']['usage']['cost']) if 'usage' in result['response'] and 'cost' in result['response']['usage'] else 0.0
                 }
                 
                 f.write(json.dumps(response_record) + "\n")
@@ -705,9 +769,11 @@ def generate_final_outputs(
                 continue
     
     logging.info(f"Saved raw responses to: {responses_path}")
+    pbar.update(1)
     
     # 4. Generate human-readable report of questions and answers
     generate_human_readable_report(df, output_dir)
+    pbar.update(1)
     
     # 5. Print summary to stdout
     print("\n=== Summary ===")
@@ -720,12 +786,17 @@ def generate_final_outputs(
     print(f"P95 latency: {metrics['overall']['p95_latency_ms']:.1f}ms")
     print(f"P99 latency: {metrics['overall']['p99_latency_ms']:.1f}ms")
     print(f"Success rate: {metrics['overall']['success_rate']:.2%}")
+    print(f"Total cost: {metrics['overall']['total_cost_cents']:.2f} cents")
+    print(f"Average cost per question: {metrics['overall']['average_cost_per_question']:.2f} cents")
     print("\nPer-year accuracy:")
     for year, year_metrics in sorted(metrics["per_year"].items()):
-        print(f"  Year {year}: {year_metrics['accuracy']:.2%}")
+        print(f"  Year {year}: {year_metrics['accuracy']:.2%} (Cost: {year_metrics['total_cost_cents']:.2f} cents)")
     print(f"\nHuman-readable overview files saved to:")
     print(f"  - {output_dir / 'question_answers_overview.csv'}")
     print(f"  - {output_dir / 'question_answers_overview.txt'}")
+    pbar.update(1)
+    
+    pbar.close()
 
 
 async def main_async():
@@ -800,11 +871,11 @@ async def main_async():
     )
     
     print("\nProcessing results...")
-    # Process results and evaluate answers
-    processed_df = process_results(results, filtered_df, output_dir)
+    # Process results and evaluate answers with progress bar
+    processed_df = process_results_with_progress(results, filtered_df, output_dir)
     
-    # Generate final outputs
-    generate_final_outputs(processed_df, results, output_dir)
+    # Generate final outputs with progress bar
+    generate_final_outputs_with_progress(processed_df, results, output_dir)
     
     # Calculate total time taken
     total_time = time.time() - start_time
@@ -827,7 +898,9 @@ async def main_async():
         "average_latency": sum(r["latency"] for r in results) / len(results) if results else 0,
         "accuracy": float(processed_df['is_correct'].mean()) if processed_df['is_correct'].notna().any() else None,
         "total_time_seconds": total_time,
-        "average_time_per_query_seconds": avg_time_per_query
+        "average_time_per_query_seconds": avg_time_per_query,
+        "total_cost_cents": float(processed_df['generation_cost'].sum()),
+        "average_cost_per_question": float(processed_df['generation_cost'].mean())
     }
     
     # Save configuration
@@ -849,6 +922,8 @@ async def main_async():
     logging.info(f"Average latency: {config['average_latency']:.2f}s")
     logging.info(f"Total time: {total_time:.2f}s")
     logging.info(f"Average time per query: {avg_time_per_query:.2f}s")
+    logging.info(f"Total cost: {config['total_cost_cents']:.2f} cents")
+    logging.info(f"Average cost per question: {config['average_cost_per_question']:.2f} cents")
     logging.info(f"Accuracy: {config['accuracy']:.2%}" if config['accuracy'] is not None else "Accuracy: N/A")
     
     print("\n=== Inference Complete ===")
@@ -858,6 +933,8 @@ async def main_async():
     print(f"Average latency: {config['average_latency']:.2f}s")
     print(f"Total time taken: {total_time:.2f}s")
     print(f"Average time per query: {avg_time_per_query:.2f}s")
+    print(f"Total cost: {config['total_cost_cents']:.2f} cents")
+    print(f"Average cost per question: {config['average_cost_per_question']:.2f} cents")
     print(f"Final accuracy: {config['accuracy']:.2%}" if config['accuracy'] is not None else "Accuracy: N/A")
     print("=" * 30 + "\n")
 

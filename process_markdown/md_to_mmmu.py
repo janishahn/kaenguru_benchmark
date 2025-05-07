@@ -404,17 +404,19 @@ def finalize_question(year, grade_min, grade_max, grade_str_key_solutions, solut
     full_question_text = " ".join(q_text_buf).strip()
     md_file_dir = Path(md_file_path).parent
 
-    # Create list of unique, ordered, absolute image paths for the JSON output
-    unique_ordered_abs_image_paths_for_json = []
-    seen_abs_paths_set = set()
+    # Create list of unique, ordered, relative image paths for the JSON output
+    unique_ordered_rel_image_paths_for_json = []
+    seen_rel_paths_set = set()
 
     for img_path_from_md_scan in img_paths_buf: # These are paths relative to MD file
         try:
             abs_path_obj = (md_file_dir / img_path_from_md_scan).resolve()
-            abs_path_str = abs_path_obj.as_posix()
-            if abs_path_str not in seen_abs_paths_set:
-                unique_ordered_abs_image_paths_for_json.append(abs_path_str)
-                seen_abs_paths_set.add(abs_path_str)
+            # Compute relative path from the markdown file's parent directory
+            rel_path_obj = abs_path_obj.relative_to(md_file_dir)
+            rel_path_str = rel_path_obj.as_posix()
+            if rel_path_str not in seen_rel_paths_set:
+                unique_ordered_rel_image_paths_for_json.append(rel_path_str)
+                seen_rel_paths_set.add(rel_path_str)
         except Exception as e:
             logging.warning(f"Error resolving or storing image path '{img_path_from_md_scan}' from {md_file_path}: {e}. Skipping this image path.")
             # Continue to process other images
@@ -426,24 +428,24 @@ def finalize_question(year, grade_min, grade_max, grade_str_key_solutions, solut
     empty_options = all(opt.strip().endswith(")") or opt.strip().endswith(") ") for opt in opts_buf)
     
     # If we have empty options and the same number of images as options, assume the images belong to the options
-    if empty_options and (len(unique_ordered_abs_image_paths_for_json) >= len(opts_buf) - 1):
+    if empty_options and (len(unique_ordered_rel_image_paths_for_json) >= len(opts_buf) - 1):
         images_are_options = True
 
     # Replace MD image tags with placeholders, or remove if they belong to options
     def replace_md_image_with_placeholder_tag(match, context="question"):
         markdown_relative_path = match.group(1)
         try:
-            # Resolve the path from the markdown text to an absolute path
-            abs_path_from_text = (md_file_dir / markdown_relative_path).resolve().as_posix()
+            abs_path_from_text = (md_file_dir / markdown_relative_path).resolve()
+            rel_path_from_text = abs_path_from_text.relative_to(md_file_dir).as_posix()
             # Find its 1-based index in our definitive list of image paths
-            if abs_path_from_text in unique_ordered_abs_image_paths_for_json:
-                image_index = unique_ordered_abs_image_paths_for_json.index(abs_path_from_text) + 1
+            if rel_path_from_text in unique_ordered_rel_image_paths_for_json:
+                image_index = unique_ordered_rel_image_paths_for_json.index(rel_path_from_text) + 1
                 # For question, include image placeholder only if images are not part of options
                 if context == "question" and images_are_options:
                     return "" # Remove image from question if it belongs to an option
                 return f"<image {image_index}>"
             else:
-                logging.warning(f"Image '{markdown_relative_path}' (resolved: {abs_path_from_text}) from {context} text '{q_num_raw}' in {md_file_path} not found in the collected image list. Original tag kept.")
+                logging.warning(f"Image '{markdown_relative_path}' (resolved: {rel_path_from_text}) from {context} text '{q_num_raw}' in {md_file_path} not found in the collected image list. Original tag kept.")
                 return match.group(0) # Keep original markdown tag
         except Exception as e:
             logging.error(f"Error during image tag replacement for '{markdown_relative_path}' in {md_file_path}: {e}. Original tag kept.")
@@ -458,7 +460,7 @@ def finalize_question(year, grade_min, grade_max, grade_str_key_solutions, solut
     if images_are_options:
         # Assign each image to its respective option
         for i, opt in enumerate(opts_buf):
-            if i < len(unique_ordered_abs_image_paths_for_json):
+            if i < len(unique_ordered_rel_image_paths_for_json):
                 image_index = i + 1  # 1-based index
                 modified_opts_buf.append(f"{opt.strip()} <image {image_index}>")
             else:
@@ -538,7 +540,7 @@ def finalize_question(year, grade_min, grade_max, grade_str_key_solutions, solut
         "question": modified_full_question_text,
         "options": modified_opts_buf,
         "answer": solution_char,
-        "image_paths": unique_ordered_abs_image_paths_for_json,
+        "image_paths": unique_ordered_rel_image_paths_for_json,
         "grade_level_raw": f"{grade_min}-{grade_max}",
         "grade_level_min": grade_min,
         "grade_level_max": grade_max,

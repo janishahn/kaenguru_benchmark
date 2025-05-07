@@ -187,4 +187,4 @@ ocr_output/
 ### Notes
 - The script is robust to minor formatting inconsistencies but expects the general structure described above.
 - All logs are written to `process_markdown/md_to_mmmu.log` for debugging and traceability.
-- The MMMU format is compatible with the [OpenCompass MMMU benchmark](https://github.com/MMMU-Benchmark/MMMU).
+- The MMMU format is compatible with the [MMMU benchmark](https://github.com/MMMU-Benchmark/MMMU).

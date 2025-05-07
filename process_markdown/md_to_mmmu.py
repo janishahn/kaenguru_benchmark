@@ -5,6 +5,7 @@ from pathlib import Path
 import pandas as pd
 import logging
 import os
+from tqdm import tqdm
 
 # --- Configuration ---
 OUTPUT_BASE_DIR_NAME = "dataset"
@@ -580,10 +581,10 @@ def main():
     all_questions_for_parquet = []
 
     logging.info("Processing exam files...")
-    for md_file in input_dir_path.glob("*_ocr_result.md"):
-        if md_file.name == SOLUTIONS_FILENAME:
-            continue
-
+    md_files = [md_file for md_file in input_dir_path.glob("*_ocr_result.md") if md_file.name != SOLUTIONS_FILENAME]
+    print(f"Found {len(md_files)} exam files to process for question extraction and JSON conversion.")
+    print("Starting exam file parsing and dataset generation...")
+    for md_file in tqdm(md_files, desc="Exam files", unit="file", dynamic_ncols=True):
         logging.info(f"  Parsing {md_file.name}...")
         year, grade_min, grade_max, grade_str_display = parse_exam_filename(md_file.name)
 
@@ -604,7 +605,7 @@ def main():
             logging.warning(f"    No questions extracted from {md_file.name}.")
             continue
 
-        for q_data in questions:
+        for q_data in tqdm(questions, desc=f"Questions in {md_file.name}", unit="q", leave=False, dynamic_ncols=True):
             if q_data is None: continue
             # Generate filename for individual JSON
             # id: MathKangaroo_2000_3-4_A1
@@ -640,6 +641,7 @@ def main():
             logging.warning("\nNo questions collected to build Parquet index.")
             
     logging.info("\nProcessing complete.")
+    print(f"Finished processing {len(md_files)} exam files.")
 
 if __name__ == "__main__":
     # Set up logging

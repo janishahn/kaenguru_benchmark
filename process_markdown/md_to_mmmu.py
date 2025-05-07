@@ -4,6 +4,7 @@ import re
 from pathlib import Path
 import pandas as pd
 import logging
+import os
 
 # --- Configuration ---
 OUTPUT_BASE_DIR_NAME = "dataset"
@@ -233,7 +234,7 @@ def extract_question_key(raw_key):
 option_regex = re.compile(r"^\s*(?:\(\s*([A-E])\s*\)|([A-E])\s*:)\s*(.*)")
 image_regex = re.compile(r"!\[.*?\]\((.*?)\)") # Capture path from ![alt](path)
 
-def parse_exam_file(exam_file_path, year, grade_min, grade_max, grade_str_key_solutions, solutions_db, input_dir_path):
+def parse_exam_file(exam_file_path, year, grade_min, grade_max, grade_str_key_solutions, solutions_db, input_dir_path, year_output_dir):
     """
     Parses a single exam Markdown file and extracts questions.
     `grade_str_key_solutions` is the key like "3-4" used in solutions_db.
@@ -280,7 +281,7 @@ def parse_exam_file(exam_file_path, year, grade_min, grade_max, grade_str_key_so
                     year, grade_min, grade_max, grade_str_key_solutions, solutions_db,
                     extract_question_key(current_question_number_raw), current_points,
                     question_text_buffer, options_buffer, image_paths_buffer,
-                    current_min_cat_points, current_max_cat_points, exam_file_path, input_dir_path
+                    current_min_cat_points, current_max_cat_points, exam_file_path, input_dir_path, year_output_dir
                 ))
                 question_keys_in_section.append(extract_question_key(current_question_number_raw))
                 question_text_buffer, options_buffer, image_paths_buffer, current_question_number_raw = [], [], [], None
@@ -311,7 +312,7 @@ def parse_exam_file(exam_file_path, year, grade_min, grade_max, grade_str_key_so
                     year, grade_min, grade_max, grade_str_key_solutions, solutions_db,
                     extract_question_key(current_question_number_raw), current_points,
                     question_text_buffer, options_buffer, image_paths_buffer,
-                    current_min_cat_points, current_max_cat_points, exam_file_path, input_dir_path
+                    current_min_cat_points, current_max_cat_points, exam_file_path, input_dir_path, year_output_dir
                 ))
                 question_keys_in_section.append(extract_question_key(current_question_number_raw))
                 question_text_buffer, options_buffer, image_paths_buffer, current_question_number_raw = [], [], [], None
@@ -383,7 +384,7 @@ def parse_exam_file(exam_file_path, year, grade_min, grade_max, grade_str_key_so
             year, grade_min, grade_max, grade_str_key_solutions, solutions_db,
             extract_question_key(current_question_number_raw), current_points,
             question_text_buffer, options_buffer, image_paths_buffer,
-            current_min_cat_points, current_max_cat_points, exam_file_path, input_dir_path
+            current_min_cat_points, current_max_cat_points, exam_file_path, input_dir_path, year_output_dir
         ))
         question_keys_in_section.append(extract_question_key(current_question_number_raw))
     
@@ -395,7 +396,7 @@ def parse_exam_file(exam_file_path, year, grade_min, grade_max, grade_str_key_so
 
 def finalize_question(year, grade_min, grade_max, grade_str_key_solutions, solutions_db,
                       q_num_raw, points_val, q_text_buf, opts_buf, img_paths_buf,
-                      min_pts_cat, max_pts_cat, md_file_path, input_dir_path_obj):
+                      min_pts_cat, max_pts_cat, md_file_path, input_dir_path_obj, year_output_dir):
     """Helper to construct the question dictionary and add it to the list."""
     if not q_text_buf or not opts_buf or points_val is None:
         logging.debug(f"Skipping question finalization due to missing text, options, or points: q_num_raw={q_num_raw}, md_file_path={md_file_path}")
@@ -403,22 +404,23 @@ def finalize_question(year, grade_min, grade_max, grade_str_key_solutions, solut
 
     full_question_text = " ".join(q_text_buf).strip()
     md_file_dir = Path(md_file_path).parent
+    # Define a common base path for resolving image paths, which is the parent of the markdown directory
+    # e.g., if md_file_dir is ".../ocr_output/ocr_markdown", base_path_for_images is ".../ocr_output"
+    base_path_for_images = md_file_dir.parent
 
     # Create list of unique, ordered, relative image paths for the JSON output
     unique_ordered_rel_image_paths_for_json = []
     seen_rel_paths_set = set()
 
-    for img_path_from_md_scan in img_paths_buf: # These are paths relative to MD file
+    for img_path_from_md_scan in img_paths_buf: # These are paths like '../ocr_images/...' relative to MD file
         try:
             abs_path_obj = (md_file_dir / img_path_from_md_scan).resolve()
-            # Compute relative path from the markdown file's parent directory
-            rel_path_obj = abs_path_obj.relative_to(md_file_dir)
-            rel_path_str = rel_path_obj.as_posix()
+            rel_path_str = os.path.relpath(abs_path_obj, year_output_dir)
             if rel_path_str not in seen_rel_paths_set:
                 unique_ordered_rel_image_paths_for_json.append(rel_path_str)
                 seen_rel_paths_set.add(rel_path_str)
         except Exception as e:
-            logging.warning(f"Error resolving or storing image path '{img_path_from_md_scan}' from {md_file_path}: {e}. Skipping this image path.")
+            logging.warning(f"Error resolving or storing image path '{img_path_from_md_scan}' from {md_file_path} relative to {year_output_dir}: {e}. Skipping this image path.")
             # Continue to process other images
 
     # Check if images belong to options rather than the question itself
@@ -433,19 +435,18 @@ def finalize_question(year, grade_min, grade_max, grade_str_key_solutions, solut
 
     # Replace MD image tags with placeholders, or remove if they belong to options
     def replace_md_image_with_placeholder_tag(match, context="question"):
-        markdown_relative_path = match.group(1)
+        markdown_relative_path = match.group(1) # e.g., '../ocr_images/img.jpg'
         try:
             abs_path_from_text = (md_file_dir / markdown_relative_path).resolve()
-            rel_path_from_text = abs_path_from_text.relative_to(md_file_dir).as_posix()
-            # Find its 1-based index in our definitive list of image paths
-            if rel_path_from_text in unique_ordered_rel_image_paths_for_json:
-                image_index = unique_ordered_rel_image_paths_for_json.index(rel_path_from_text) + 1
+            key_for_lookup = os.path.relpath(abs_path_from_text, year_output_dir)
+            if key_for_lookup in unique_ordered_rel_image_paths_for_json:
+                image_index = unique_ordered_rel_image_paths_for_json.index(key_for_lookup) + 1
                 # For question, include image placeholder only if images are not part of options
                 if context == "question" and images_are_options:
                     return "" # Remove image from question if it belongs to an option
                 return f"<image {image_index}>"
             else:
-                logging.warning(f"Image '{markdown_relative_path}' (resolved: {rel_path_from_text}) from {context} text '{q_num_raw}' in {md_file_path} not found in the collected image list. Original tag kept.")
+                logging.warning(f"Image '{markdown_relative_path}' (resolved: {key_for_lookup}) from {context} text '{q_num_raw}' in {md_file_path} not found in the collected image list. Original tag kept.")
                 return match.group(0) # Keep original markdown tag
         except Exception as e:
             logging.error(f"Error during image tag replacement for '{markdown_relative_path}' in {md_file_path}: {e}. Original tag kept.")
@@ -592,16 +593,16 @@ def main():
         
         grade_key_for_solutions = f"{grade_min}-{grade_max}"
 
-        questions = parse_exam_file(md_file, year, grade_min, grade_max, grade_key_for_solutions, solutions_db, input_dir_path)
-
-        if not questions:
-            logging.warning(f"    No questions extracted from {md_file.name}.")
-            continue
-
         # Create year-specific output directory
         year_str = str(year).strip()
         year_output_dir = output_dir_base / year_str
         year_output_dir.mkdir(parents=True, exist_ok=True)
+
+        questions = parse_exam_file(md_file, year, grade_min, grade_max, grade_key_for_solutions, solutions_db, input_dir_path, year_output_dir)
+
+        if not questions:
+            logging.warning(f"    No questions extracted from {md_file.name}.")
+            continue
 
         for q_data in questions:
             if q_data is None: continue

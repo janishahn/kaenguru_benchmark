@@ -87,7 +87,7 @@ After running the script, you will find:
 
 ## Markdown to MMMU Format Conversion
 
-The project includes a script for converting OCR-generated Markdown files of Math Kangaroo exams and their solutions into the [MMMU](https://github.com/open-compass/MMMU) (Massive Multi-discipline Multi-choice Understanding) JSON format, suitable for LLM benchmarking and dataset creation.
+The project includes a script for converting OCR-generated Markdown files of Math Kangaroo exams and their solutions into the [MMMU](https://mmmu-benchmark.github.io/) (Massive Multi-discipline Multi-choice Understanding) JSON format, suitable for LLM benchmarking and dataset creation.
 
 ### How It Works
 

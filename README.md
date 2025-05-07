@@ -9,14 +9,15 @@ This project aims to build a Large Language Model (LLM) benchmark based on the M
 - Python 3.8+
 - [mistralai](https://pypi.org/project/mistralai/) (for PDF OCR pipeline)
 - [tqdm](https://pypi.org/project/tqdm/) (optional, for progress bars)
-- [python-dotenv](https://pypi.org/project/python-dotenv/) (optional, for loading environment variables)
-- [pandas](https://pypi.org/project/pandas/) (for Markdown to MMMU conversion)
-- [pyarrow](https://pypi.org/project/pyarrow/) (optional, for Parquet index building)
+- [python-dotenv](https://pypi.org/project/python-dotenv/) (for loading environment variables)
+- [pandas](https://pypi.org/project/pandas/) (for data processing and analysis)
+- [pyarrow](https://pypi.org/project/pyarrow/) (for Parquet file handling)
+- [aiohttp](https://pypi.org/project/aiohttp/) (for asynchronous API requests)
 
 To install all required packages:
 
 ```bash
-pip install mistralai tqdm python-dotenv pandas pyarrow
+pip install -r requirements.txt
 ```
 
 ---
@@ -188,3 +189,146 @@ ocr_output/
 - The script is robust to minor formatting inconsistencies but expects the general structure described above.
 - All logs are written to `process_markdown/md_to_mmmu.log` for debugging and traceability.
 - The MMMU format is compatible with the [MMMU benchmark](https://github.com/MMMU-Benchmark/MMMU).
+
+---
+
+## LLM Inference
+
+The project includes a comprehensive LLM inference script for evaluating language models against the Math Kangaroo benchmark. The script handles prompt construction, efficient batched API requests, answer extraction, and detailed performance analysis.
+
+### How It Works
+
+1. **Input**: Takes a path to a Kangaroo dataset in Parquet format.
+2. **Preprocessing**:
+    - Loads question data from the specified Parquet file.
+    - Filters out multimodal items that contain images (optional).
+    - Validates required columns in the input data.
+3. **Prompt Construction**:
+    - Constructs prompts for each question, including question text, options, and a prompt template.
+    - Supports two prompt types: reasoning (for step-by-step problem solving) and no-reasoning (for direct answers).
+4. **API Requests**:
+    - Makes asynchronous requests to the OpenRouter API with configurable concurrency and batch size.
+    - Implements exponential backoff retry logic for handling API errors and rate limits.
+    - Records detailed information about each request, including latency and response.
+5. **Answer Extraction**:
+    - Extracts answers from LLM responses using robust regex patterns.
+    - Handles various answer formats (e.g., "A", "(A)", "The answer is A").
+    - Detects and handles truncated responses.
+    - Compares extracted answers with ground truth.
+6. **Output Generation**:
+    - Generates comprehensive metrics including overall and per-year accuracy.
+    - Saves results in multiple formats for analysis and inspection.
+    - Provides detailed console output with progress updates.
+
+### Setup
+
+1. **Set your OpenRouter API key**:
+    - Create a `.env` file in the project root with:
+      ```
+      OPENROUTER_API_KEY=your_api_key_here
+      ```
+
+2. **Create prompt templates**:
+    - Create two prompt template files in `llm_inference/prompts/`:
+      - `reasoning_prompt.md`: Template for step-by-step reasoning.
+      - `no_reasoning_prompt.md`: Template for direct answers.
+
+### Usage
+
+#### Basic Usage
+
+```bash
+python llm_inference/llm_inference.py path/to/dataset.parquet
+```
+
+#### Specify Model and Output Directory
+
+```bash
+python llm_inference/llm_inference.py path/to/dataset.parquet --model anthropic/claude-3-opus-20240229 --output_dir outputs/claude3
+```
+
+#### Configure Batch Processing
+
+```bash
+python llm_inference/llm_inference.py path/to/dataset.parquet --batch_size 5 --concurrency 3
+```
+
+#### Enable Reasoning Mode
+
+```bash
+python llm_inference/llm_inference.py path/to/dataset.parquet --reasoning
+```
+
+#### Configure Token Limits
+
+```bash
+python llm_inference/llm_inference.py path/to/dataset.parquet --max_tokens 8000
+```
+
+### Command Line Arguments
+
+- `input_file` (required): Path to Kangaroo dataset .parquet file
+- `--model`: OpenRouter model slug (default: "google/gemini-2.5-flash-preview")
+- `--output-dir`: Directory to save output files (default: "llm_outputs")
+- `--batch-size`: Number of samples to process in each batch (default: 1)
+- `--max-retries`: Maximum number of retries for failed API calls (default: 3)
+- `--concurrency`: Number of concurrent API calls (default: 1)
+- `--reasoning`: Enable reasoning mode for step-by-step problem solving
+- `--max-tokens`: Maximum number of tokens to generate (default: 4000, increased for reasoning)
+
+### Output Structure
+
+All outputs are saved in timestamped directories in the specified output directory:
+- `results.parquet`: Processed results with model answers and correctness flags
+- `metrics.json`: Comprehensive metrics including overall and per-year accuracy
+- `raw_responses.jsonl`: Full API request and response data for analysis
+- `batch_xxx_results.json`: Individual batch results
+- `all_results.json`: All API responses combined
+- `prompts.txt`: Generated prompts for inspection
+- `config.txt`: Run configuration details
+- `preprocessing.log`: Detailed logs
+- `filtered_dataset.parquet`: Dataset after filtering out multimodal items
+
+### Metrics and Evaluation
+
+The script evaluates model performance with several metrics:
+- Overall accuracy: Percentage of correctly answered questions
+- Per-year accuracy: Breakdown of accuracy by competition year
+- Latency statistics: Average, P95, and P99 response times
+- Success rate: Percentage of successful API calls
+- Error rate: Percentage of questions that resulted in errors
+- Truncation rate: Percentage of responses that were truncated
+- A detailed console summary is printed at the end of each run
+
+### Example Output
+
+The `metrics.json` file contains comprehensive statistics:
+
+```json
+{
+  "overall": {
+    "total_questions": 100,
+    "answered_questions": 95,
+    "correct_answers": 80,
+    "error_answers": 5,
+    "truncated_responses": 2,
+    "accuracy": 0.842,
+    "average_latency_ms": 1234.5,
+    "p95_latency_ms": 2000.0,
+    "p99_latency_ms": 3000.0,
+    "success_rate": 0.95
+  },
+  "per_year": {
+    "2020": {
+      "total_questions": 30,
+      "answered_questions": 28,
+      "correct_answers": 24,
+      "truncated_responses": 1,
+      "accuracy": 0.857,
+      "average_latency_ms": 1200.0,
+      "success_rate": 0.93
+    }
+    // ... other years
+  }
+}
+```

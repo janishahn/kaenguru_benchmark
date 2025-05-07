@@ -1,0 +1,1 @@
+Solve the given multiple choice math problem as a domain expert. Carefully analyze and select the correct answer. Output *only* the letter (A, B, C, D, or E) corresponding to your final choice. Do not include explanations, reasoning, or any additional text - **output exactly one letter and nothing else**.

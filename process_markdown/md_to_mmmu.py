@@ -405,9 +405,6 @@ def finalize_question(year, grade_min, grade_max, grade_str_key_solutions, solut
 
     full_question_text = " ".join(q_text_buf).strip()
     md_file_dir = Path(md_file_path).parent
-    # Define a common base path for resolving image paths, which is the parent of the markdown directory
-    # e.g., if md_file_dir is ".../ocr_output/ocr_markdown", base_path_for_images is ".../ocr_output"
-    base_path_for_images = md_file_dir.parent
 
     # Create list of unique, ordered, relative image paths for the JSON output
     unique_ordered_rel_image_paths_for_json = []

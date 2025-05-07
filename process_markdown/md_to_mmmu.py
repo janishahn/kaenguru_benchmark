@@ -1,342 +1,652 @@
-#!/usr/bin/env python3
-
 import argparse
 import json
-import logging
 import re
 from pathlib import Path
 import pandas as pd
-import math
-from tqdm import tqdm # Import tqdm
+import logging
 
-# Constants
-INDEX_FILENAME = "kangaroo_index.parquet"
+# --- Configuration ---
+OUTPUT_BASE_DIR_NAME = "dataset"
+SOLUTIONS_FILENAME = "kaenguru_loesungen_alle_ocr_result.md"
+IMAGE_DIR_RELATIVE_TO_MD_PARENT = "ocr_images" # Assumes ocr_images is sibling to the dir containing MD files
+LOG_FILENAME = (Path(__file__).parent / "md_to_mmmu.log").resolve()
 
-# Setup logging
-log_file_path = Path(__file__).parent / "md_to_mmmu.log"
+# Grade level normalization constants
+GRADE_LEVEL_MIN_OVERALL = 3
+GRADE_LEVEL_MAX_OVERALL = 13
+GRADE_SPAN_OVERALL = GRADE_LEVEL_MAX_OVERALL - GRADE_LEVEL_MIN_OVERALL
 
-# Configure file handler first
-file_handler = logging.FileHandler(log_file_path, mode='w') # Added mode='w' to overwrite log on each run
-file_handler.setLevel(logging.DEBUG)
-file_handler.setFormatter(logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s"))
+# Point normalization constants
+POINTS_MIN_3_5 = 3
+POINTS_MAX_3_5 = 5
+POINTS_SPAN_3_5 = POINTS_MAX_3_5 - POINTS_MIN_3_5
 
-# Configure console handler for errors only
-console_handler = logging.StreamHandler()
-console_handler.setLevel(logging.ERROR)  # Only show errors on console
-console_handler.setFormatter(logging.Formatter("%(levelname)s: %(message)s"))
+POINTS_MIN_6_10 = 6
+POINTS_MAX_6_10 = 10
+POINTS_SPAN_6_10 = POINTS_MAX_6_10 - POINTS_MIN_6_10
 
-# Setup root logger
-root_logger = logging.getLogger()
-root_logger.setLevel(logging.DEBUG)  # Capture all messages
-root_logger.addHandler(file_handler)
-root_logger.addHandler(console_handler)
+# --- Helper Functions ---
 
-OUTPUT_DIR = (Path(__file__).parent.parent / "dataset").resolve()
-OUTPUT_DIR.mkdir(exist_ok=True, parents=True)
-
-# New function to parse filename
-def parse_filename_info(filename: str) -> tuple[int | None, int | None, int | None]:
+def parse_exam_filename(filename_str):
     """
-    Parses year, grade_min, and grade_max from the exam filename.
-    Filename structure: {year-abbreviation}_{grade-from}{grade-to}_ocr_result.md
-    Examples:
-    - 22_1113_ocr_result.md -> year=2022, grade_from=11, grade_to=13
-    - 99_34_ocr_result.md   -> year=1999, grade_from=3, grade_to=4
-    - 02_1113_ergaenzt_ocr_result.md -> year=2002, grade_from=11, grade_to=13
-    - 19_910_ocr_result.md  -> year=2019, grade_from=9, grade_to=10
+    Parses year and grade levels from the exam filename.
+    Example: "00_34_ocr_result.md" -> (2000, 3, 4, "3-4")
+             "02_1113_ergaenzt_ocr_result.md" -> (2002, 11, 13, "11-13")
+             "98_56_ocr_result.md" -> (1998, 5, 6, "5-6")
     """
-    fn_re = re.compile(r"(\d{2})_(\d+)(?:_ergaenzt)?_ocr_result\.md")
-    match = fn_re.match(filename)
-
+    match = re.match(r"(\d{2})_(\d{2,4})(?:_ergaenzt)?_ocr_result\.md", filename_str)
     if not match:
-        return None, None, None
+        logging.warning(f"Could not parse filename: {filename_str}")
+        return None, None, None, None
 
-    year_abbr_str = match.group(1)
-    grades_str = match.group(2)
+    year_short, grade_code = match.groups()
 
-    # Parse year
-    year_abbr = int(year_abbr_str)
-    if year_abbr >= 90: # Covers 90-99
-        year = 1900 + year_abbr
-    else: # Covers 00-89 (e.g., 00 for 2000, 23 for 2023)
-        year = 2000 + year_abbr
-
-    # Parse grades
-    grade_from, grade_to = None, None
-    if len(grades_str) == 2: # e.g., "34" -> grades 3 and 4
-        grade_from = int(grades_str[0])
-        grade_to = int(grades_str[1])
-    elif len(grades_str) == 3: # e.g., "910" -> grades 9 and 10
-        grade_from = int(grades_str[0])
-        grade_to = int(grades_str[1:])
-    elif len(grades_str) == 4: # e.g., "1113" -> grades 11 and 13
-        grade_from = int(grades_str[0:2])
-        grade_to = int(grades_str[2:])
+    year = int(year_short)
+    if year < 50: # Assuming years 00-49 are 2000s, 50-99 are 1900s
+        year += 2000
     else:
-        logging.warning(f"Invalid grade format length in filename {filename}: '{grades_str}'")
-        return None, None, None
+        year += 1900
 
-    return year, grade_from, grade_to
+    grade_min, grade_max = -1, -1
+    grade_str_display = ""
+
+    if len(grade_code) == 2: # e.g., "34"
+        grade_min = int(grade_code[0])
+        grade_max = int(grade_code[1])
+        grade_str_display = f"{grade_min}-{grade_max}"
+    elif len(grade_code) == 3: # e.g., "78", "910"
+        if grade_code.startswith('9'): # "910"
+             grade_min = 9
+             grade_max = 10
+        else:
+            grade_min = int(grade_code[0])
+            grade_max = int(grade_code[1:])
+        grade_str_display = f"{grade_min}-{grade_max}"
+    elif len(grade_code) == 4: # e.g., "1113"
+        grade_min = int(grade_code[:2])
+        grade_max = int(grade_code[2:])
+        grade_str_display = f"{grade_min}-{grade_max}"
+    else: # Fallback for single grade, e.g. if a file was "00_3_ocr_result.md"
+        try:
+            grade_min = int(grade_code)
+            grade_max = int(grade_code)
+            grade_str_display = str(grade_min)
+        except ValueError:
+            logging.warning(f"Could not parse grade_code '{grade_code}' from {filename_str}")
+            return None, None, None, None
 
 
-def parse_exam_md(md_path: Path, file_year: int, file_grade_min: int, file_grade_max: int) -> dict:
+    if grade_min == -1 : # safety check
+        logging.warning(f"Could not parse grade_code '{grade_code}' from {filename_str}")
+        return None, None, None, None
+
+    return year, grade_min, grade_max, grade_str_display
+
+def normalize_grade_string_for_solutions(grade_header_str):
     """
-    Parse one exam markdown file into question dicts.
-    Year, grade_min, and grade_max are provided from filename parsing.
-    Returns: mapping id -> question_data (without answer)
+    Normalizes grade strings from solution file headers to a consistent key format.
+    e.g., "Klassenstufen 3 und 4" -> "3-4"
+          "Klassenstufen 11 bis 13" -> "11-13"
     """
-    text = md_path.read_text(encoding='utf-8')
-    lines = text.splitlines()
+    match_und = re.search(r"(\d{1,2}) und (\d{1,2})", grade_header_str)
+    if match_und:
+        return f"{match_und.group(1)}-{match_und.group(2)}"
+    match_bis = re.search(r"(\d{1,2}) bis (\d{1,2})", grade_header_str)
+    if match_bis:
+        return f"{match_bis.group(1)}-{match_bis.group(2)}"
+    # Add more patterns if other formats exist
+    logging.warning(f"Could not normalize grade string: {grade_header_str}")
+    return grade_header_str # Fallback
 
-    # Regex patterns
-    points_section_re = re.compile(r'(\d)-Punkte[- ]Aufgaben', re.IGNORECASE)
-    q_start_re = re.compile(r'^(?:A|B|C)?(\d+)[\.]?\s')
-    choice_re = re.compile(r'^\(([A-E])\)\s*(.*)')
+def parse_solutions(solution_file_path):
+    """
+    Parses the main solution Markdown file.
+    Returns a dictionary: solutions[year_str][grade_key_str][task_str] = answer_char
+    """
+    solutions_db = {}
+    try:
+        with open(solution_file_path, 'r', encoding='utf-8') as f:
+            content = f.read()
+    except FileNotFoundError:
+        logging.error(f"Solution file not found at {solution_file_path}")
+        return solutions_db
+
+    # Split content into sections per year
+    # A year section starts with "## Lösungsbuchstaben" and ends before the next one or EOF
+    year_block_regex = r"## Lösungsbuchstaben\s+für den Känguru-Mathematikwettbewerb\s*(\d{4})"
+    # re.split with a capturing group results in: [before_first_delimiter, group1_val, after_delimiter_content, group1_val, ...]
+    year_parts = re.split(year_block_regex, content)
+
+    if len(year_parts) < 3: # Should have at least: content_before_first_year_header, first_year, first_year_content
+        logging.warning("No year sections found in solutions file or format is unexpected.")
+        return solutions_db
+
+    # Iterate over pairs of (year_str, year_content_block)
+    # The first element of year_parts is content before the first year header, skip it.
+    current_year_str = None
+    for i in range(1, len(year_parts)):
+        part = year_parts[i]
+        if i % 2 == 1: # This part is a year string (captured by \d{4})
+            current_year_str = part.strip()
+            solutions_db[current_year_str] = {}
+            logging.debug(f"Initializing solutions for year: {current_year_str}")
+        elif current_year_str: # This part is the content for the current_year_str
+            year_content_block = part
+            
+            # Regex to find grade headers within the current year's content block
+            # Captures "Klassenstufen X und Y" or "Klassenstufen X bis Y"
+            # Also captures the "X und Y" or "X bis Y" part for normalization
+            grade_header_regex = re.compile(
+                r"^(?:#+\s*)?Klassenstufen\s+(\d{1,2}\s+(?:und|bis)\s+\d{1,2})", 
+                re.MULTILINE | re.IGNORECASE
+            )
+            
+            grade_header_matches = list(grade_header_regex.finditer(year_content_block))
+            
+            if not grade_header_matches:
+                logging.warning(f"No grade headers found for year {current_year_str} in block: {year_content_block[:200]}...") # Log start of block
+
+            for idx, match_obj in enumerate(grade_header_matches):
+                grade_description_part = match_obj.group(1)  # e.g. "3 und 4" or "11 bis 13"
+                
+                # Prepend "Klassenstufen" to match expected format for normalization
+                normalized_grade_key = normalize_grade_string_for_solutions(f"Klassenstufen {grade_description_part}")
+
+                if normalized_grade_key == f"Klassenstufen {grade_description_part}": # Normalization failed, log and skip
+                    logging.warning(f"Could not normalize grade header '{grade_description_part}' for year {current_year_str}. Skipping this grade section.")
+                    continue
+                
+                solutions_db[current_year_str][normalized_grade_key] = {}
+                
+                # Determine the content for this grade section
+                content_start_pos = match_obj.end()
+                content_end_pos = grade_header_matches[idx+1].start() if idx + 1 < len(grade_header_matches) else len(year_content_block)
+                grade_section_text = year_content_block[content_start_pos:content_end_pos]
+                
+                task_lines_buffer = []
+                answer_lines_buffer = []
+
+                for line in grade_section_text.strip().split('\n'):
+                    line_s = line.strip()
+                    if not line_s: continue # Skip empty lines
+                    if line_s.startswith('| Aufgabe |'):
+                        task_lines_buffer.append(line_s)
+                    elif line_s.startswith('| Antwort |'):
+                        answer_lines_buffer.append(line_s)
+                    elif line_s.startswith('| :-- |'): # Skip markdown table separator lines
+                        continue
+                
+                if len(task_lines_buffer) != len(answer_lines_buffer):
+                    logging.warning(f"Mismatch in 'Aufgabe' ({len(task_lines_buffer)}) and 'Antwort' ({len(answer_lines_buffer)}) table rows for year {current_year_str}, grade {normalized_grade_key}.")
+                    # Continue with the minimum of the two, to salvage some data
+                
+                for tbl_idx in range(min(len(task_lines_buffer), len(answer_lines_buffer))):
+                    header_line = task_lines_buffer[tbl_idx]
+                    answer_line = answer_lines_buffer[tbl_idx]
+                    
+                    raw_tasks = [h.strip() for h in header_line.split('|')[2:] if h.strip()] # Skip first two empty items from split
+                    raw_answers = [a.strip() for a in answer_line.split('|')[2:] if a.strip()] # Same here
+                    
+                    if len(raw_tasks) == len(raw_answers):
+                        for task, ans in zip(raw_tasks, raw_answers):
+                            # Ensure task key is not empty, as it's used as a dict key
+                            if task: 
+                                solutions_db[current_year_str][normalized_grade_key][task] = ans
+                            else:
+                                logging.warning(f"Empty task key found for year {current_year_str}, grade {normalized_grade_key}. Line: {header_line}")
+                    else:
+                        logging.warning(f"Mismatch in task/answer count within a table for year {current_year_str}, grade {normalized_grade_key}: Tasks '{raw_tasks}' vs Answers '{raw_answers}' in lines:\n{header_line}\n{answer_line}")
+            
+            if not solutions_db[current_year_str] and grade_header_matches: # If headers were found but no data populated
+                 logging.warning(f"Data for grade sections might be empty or not parsed correctly for year {current_year_str}, even though grade headers were found.")
+            elif not grade_header_matches and year_content_block.strip(): # If there was content but no headers
+                 logging.warning(f"No grade headers like 'Klassenstufen X und Y' found in content for year {current_year_str}.")
+            current_year_str = None # Reset for the next block
+
+    return solutions_db
+
+
+def calculate_difficulty(avg_grade, points, current_min_points, current_max_points):
+    """Calculates a difficulty score between 0 and 1."""
+    if GRADE_SPAN_OVERALL == 0: # Avoid division by zero
+        norm_grade = 0.5
+    else:
+        norm_grade = (avg_grade - GRADE_LEVEL_MIN_OVERALL) / GRADE_SPAN_OVERALL
+    
+    current_points_span = current_max_points - current_min_points
+    if current_points_span == 0: # Avoid division by zero
+        norm_points = 0.5
+    else:
+        norm_points = (points - current_min_points) / current_points_span
+        
+    difficulty_score = (norm_grade * 0.6) + (norm_points * 0.4)
+    return max(0.0, min(1.0, difficulty_score)) # Clamp between 0 and 1
+
+# --- Helper: Extract question key robustly ---
+def extract_question_key(raw_key):
+    key = str(raw_key).strip()
+    key = re.sub(r'^[\(\[]*', '', key)  # Remove leading ( or [
+    key = re.sub(r'[\)\]:\.]?$', '', key)  # Remove trailing ) or : or .
+    key = key.replace(' ', '')
+    return key
+
+option_regex = re.compile(r"^\s*(?:\(\s*([A-E])\s*\)|([A-E])\s*:)\s*(.*)")
+image_regex = re.compile(r"!\[.*?\]\((.*?)\)") # Capture path from ![alt](path)
+
+def parse_exam_file(exam_file_path, year, grade_min, grade_max, grade_str_key_solutions, solutions_db, input_dir_path):
+    """
+    Parses a single exam Markdown file and extracts questions.
+    `grade_str_key_solutions` is the key like "3-4" used in solutions_db.
+    """
+    questions_data = []
+    
+    try:
+        with open(exam_file_path, 'r', encoding='utf-8') as f:
+            lines = f.readlines()
+    except FileNotFoundError:
+        logging.error(f"Exam file not found: {exam_file_path}")
+        return questions_data
 
     current_points = None
-    question_map = {}
+    current_min_cat_points = None # For 3/4/5 or 6/8/10 system
+    current_max_cat_points = None
 
-    i = 0
-    while i < len(lines):
-        line = lines[i].strip()
+    question_text_buffer = []
+    options_buffer = []
+    image_paths_buffer = []
+    current_question_number_raw = None
+    
+    # Matches # or ##, optional dash, optional 'Punkte', optional dash, Aufgaben/Fragen, with or without dashes/spaces
+    points_header_regex = re.compile(r"^#{1,3}\s*(\d+)\s*-?\s*Punkte\s*-?\s*(Aufgaben|Fragen)", re.IGNORECASE)
+    # Matches A1. Text, A1) Text, (A1) Text, A1 Text, A1: Text, etc.
+    question_start_regex = re.compile(r"^\s*(?:\(?([A-C]?[0-9]{1,2})\)?[\.:\)]?\s+)(.*)")
+    option_regex = re.compile(r"^\s*(?:\(\s*([A-E])\s*\)|([A-E])\s*:)\s*(.*)")
+    image_regex = re.compile(r"!\[.*?\]\((.*?)\)") # Capture path from ![alt](path)
 
-        # Use search instead of match to find points section header anywhere in the line
-        pm = points_section_re.search(line) # MODIFIED HERE
-        if pm:
-            current_points = int(pm.group(1))
-            logging.debug(f"Found points section in {md_path.name}: {current_points} points. Line: '{line}'")
-            i += 1
+    parsing_questions_started = False
+    question_keys_in_section = []
+
+    # Regex to find all individual options like "(A) text" within a line
+    multi_option_finder_regex = re.compile(r"\(\s*([A-E])\s*\)\s*(.*?)(?=\s*\(\s*[A-E]\s*\)\s*|$)")
+
+    for line_num, line in enumerate(lines):
+        line_strip = line.strip()
+
+        # Check for points header
+        points_match = points_header_regex.match(line_strip)
+        if points_match:
+            if current_question_number_raw and question_text_buffer: # Save previous question
+                questions_data.append(finalize_question(
+                    year, grade_min, grade_max, grade_str_key_solutions, solutions_db,
+                    extract_question_key(current_question_number_raw), current_points,
+                    question_text_buffer, options_buffer, image_paths_buffer,
+                    current_min_cat_points, current_max_cat_points, exam_file_path, input_dir_path
+                ))
+                question_keys_in_section.append(extract_question_key(current_question_number_raw))
+                question_text_buffer, options_buffer, image_paths_buffer, current_question_number_raw = [], [], [], None
+
+            current_points = int(points_match.group(1))
+            parsing_questions_started = True
+            # Determine point system for difficulty calculation
+            if current_points in [3,4,5]:
+                current_min_cat_points = POINTS_MIN_3_5
+                current_max_cat_points = POINTS_MAX_3_5
+            elif current_points in [6,8,10]:
+                current_min_cat_points = POINTS_MIN_6_10
+                current_max_cat_points = POINTS_MAX_6_10
+            else: # Fallback or warning
+                logging.warning(f"Unknown point category {current_points} in {exam_file_path}. Defaulting difficulty points.")
+                current_min_cat_points = current_points 
+                current_max_cat_points = current_points
             continue
 
-        qm = q_start_re.match(line)
-        if qm:
-            qnum = qm.group(1)
-            stem_lines = [line[qm.end():].strip()]
-            i += 1
-            while i < len(lines) and \
-                  not choice_re.match(lines[i]) and \
-                  not q_start_re.match(lines[i]) and \
-                  not points_section_re.search(lines[i]): # Also use search here for consistency during stem collection
-                stem_lines.append(lines[i].strip())
-                i += 1
+        if not parsing_questions_started:
+            continue # Skip intro lines
 
-            options = {}
-            while i < len(lines):
-                cm = choice_re.match(lines[i])
-                if not cm:
-                    break
-                options[cm.group(1)] = cm.group(2).strip()
-                i += 1
+        # Check for question start
+        q_match = question_start_regex.match(line_strip)
+        if q_match:
+            if current_question_number_raw and question_text_buffer: # Save previous question
+                questions_data.append(finalize_question(
+                    year, grade_min, grade_max, grade_str_key_solutions, solutions_db,
+                    extract_question_key(current_question_number_raw), current_points,
+                    question_text_buffer, options_buffer, image_paths_buffer,
+                    current_min_cat_points, current_max_cat_points, exam_file_path, input_dir_path
+                ))
+                question_keys_in_section.append(extract_question_key(current_question_number_raw))
+                question_text_buffer, options_buffer, image_paths_buffer, current_question_number_raw = [], [], [], None
+            current_question_number_raw = q_match.group(1)
+            question_text_buffer = [q_match.group(2).strip()]
+            options_buffer = []
+            image_paths_buffer = []
+            for img_match in image_regex.finditer(q_match.group(2)):
+                image_paths_buffer.append(img_match.group(1))
+            continue
+
+        if current_question_number_raw: # If we are inside a question block
+            # Check for options
+            opt_match = option_regex.match(line_strip)
             
-            if current_points is None:
-                logging.warning(f"Question {qnum} in {md_path.name} found before any points section. Points will be None. Line: '{line[:50]}...'")
-
-
-            qcode = f"{section_prefix(stem_lines)}{qnum}"
-            qid = f"K{file_year}_{file_grade_min}-{file_grade_max}_{qcode}"
-            question_map[qid] = {
-                'id': qid,
-                'year': file_year,
-                'grade_min': file_grade_min,
-                'grade_max': file_grade_max,
-                'points': current_points,
-                'question_type': 'multiple_choice' if options else 'free_response',
-                'question': ' '.join(stem_lines),
-                'options': options,
-                'answer': None
-            }
-            logging.debug(f"Parsed question {qid} with points: {current_points} from {md_path.name}")
-            continue
-
-        i += 1
-    return question_map
-
-
-def section_prefix(stem_lines):
-    """Infer section A/B/C from stem or context (stub)."""
-    # For now, this remains a stub. A more sophisticated implementation
-    # might inspect stem_lines or rely on question numbering if available.
-    # Example: if question numbers are like A1, B1, C1.
-    # The q_start_re `^(?:A|B|C)?(\d+)` already allows for this,
-    # but the first group `(?:A|B|C)?` is non-capturing.
-    # If q_start_re was `^([ABC])?(\d+)`, group 1 could be the section.
-    return 'A'
-
-
-def parse_solutions_md(md_path: Path) -> dict:
-    """
-    Parse solutions markdown into id->answer map.
-    """
-    year_re = re.compile(r'für den Känguru[- ]Mathematikwettbewerb\s+(\d{4})')
-    grade_re = re.compile(r'Klassenstufe[n]?\s+(\d+)(?:\s*(?:bis|und)[\s-]*(\d+))?')
-    table_re = re.compile(r'\|\s*Aufgabe')
-    solution_map = {}
-
-    lines = md_path.read_text(encoding='utf-8').splitlines()
-    current_year = grade_min = grade_max = None
-    i = 0
-    while i < len(lines):
-        l = lines[i].strip()
-        ym = year_re.search(l)
-        if ym:
-            current_year = int(ym.group(1))
-            i += 1
-            continue
-        gm = grade_re.search(l)
-        if gm:
-            grade_min = int(gm.group(1))
-            grade_max = int(gm.group(2)) if gm.group(2) else grade_min
-            i += 1
-            continue
-        if table_re.match(l): # Match is okay here as table header should be at line start (after |)
-            if current_year is None or grade_min is None or grade_max is None:
-                logging.error(f"Skipping solution table at line {i+1} in {md_path.name} due to missing year or grade information.")
-                i += 3
-                continue
-            header = [c.strip() for c in l.split('|')[1:-1]][1:]
-            ans = [c.strip() for c in lines[i+2].split('|')[1:-1]][1:]
-            if len(header) != len(ans):
-                logging.error(f"Header and answer mismatch in solution table in {md_path.name} at line {i+1}. Header: {len(header)} items, Answers: {len(ans)} items.")
-                i +=3
-                continue
-            for code, a in zip(header, ans):
-                key = f"K{current_year}_{grade_min}-{grade_max}_{code}"
-                if a in ('*', '–', ''):
-                    solution_map[key] = None
+            if opt_match:
+                found_options_on_line = multi_option_finder_regex.findall(line_strip)
+                
+                if found_options_on_line:
+                    for opt_letter, opt_text_content in found_options_on_line:
+                        formatted_option = f"({opt_letter.strip()}) {opt_text_content.strip()}"
+                        options_buffer.append(formatted_option)
+                        # also parse images from this specific option's text
+                        for img_match in image_regex.finditer(opt_text_content):
+                            image_paths_buffer.append(img_match.group(1))
                 else:
-                    letters = re.findall(r'[A-E]', a.upper()) # Convert to upper for consistency
-                    if letters:
-                        solution_map[key] = letters if len(letters) > 1 else letters[0]
+                    # No "(X) text" options found - fallback to original opt_match for "A: text" style
+                    option_letter_orig = opt_match.group(1) or opt_match.group(2) # group1 for (X), group2 for X:
+                    option_text_orig = opt_match.group(3).strip()
+                    
+                    # Store in the canonical "(A) Text" format
+                    options_buffer.append(f"({option_letter_orig.strip()}) {option_text_orig}")
+                    for img_match in image_regex.finditer(option_text_orig):
+                        image_paths_buffer.append(img_match.group(1))
+
+                    # Fallback for single-line options like 'A: ... B: ...'
+                    if len(options_buffer) == 1:
+                        all_alt_options = re.findall(r'([A-E]):\s*([^A-E]*)', option_text_orig)
+                        if len(all_alt_options) >= 2:
+                            # Remove the previously added single entry
+                            options_buffer.pop()
+                            # Split line into individual options
+                            split_pattern = re.compile(r'([A-E]):\s*([^A-E]*)')
+                            matches = list(split_pattern.finditer(line_strip))
+                            for idx, match in enumerate(matches):
+                                letter = match.group(1)
+                                start = match.end()
+                                end = matches[idx+1].start() if idx+1 < len(matches) else len(line_strip)
+                                text = line_strip[start:end].strip()
+                                # Prepend the matched text (in case the value is not empty)
+                                full_option = f"({letter}) {match.group(2).strip()} {text}".strip()
+                                options_buffer.append(full_option)
+                                for img_match in image_regex.finditer(full_option):
+                                    image_paths_buffer.append(img_match.group(1))
+                
+                # Since this line was processed as an option line, continue to the next line in the input file.
+                continue 
+
+            elif question_text_buffer: # Continue collecting question text if not an option line
+                # Only add if it's not an empty line or just an image line that's already processed by image_regex
+                if line_strip:
+                     question_text_buffer.append(line_strip)
+                for img_match in image_regex.finditer(line_strip):
+                    image_paths_buffer.append(img_match.group(1))
+    
+    # Add the last question after loop finishes
+    if current_question_number_raw and question_text_buffer:
+        questions_data.append(finalize_question(
+            year, grade_min, grade_max, grade_str_key_solutions, solutions_db,
+            extract_question_key(current_question_number_raw), current_points,
+            question_text_buffer, options_buffer, image_paths_buffer,
+            current_min_cat_points, current_max_cat_points, exam_file_path, input_dir_path
+        ))
+        question_keys_in_section.append(extract_question_key(current_question_number_raw))
+    
+    # Log if first question is not A1 or 1
+    if question_keys_in_section and not (question_keys_in_section[0] in ['A1', '1']):
+        logging.warning(f"First question key is not A1 or 1: {question_keys_in_section[0]} in {exam_file_path}")
+    
+    return [q for q in questions_data if q is not None] # Filter out None if finalize_question returns it
+
+def finalize_question(year, grade_min, grade_max, grade_str_key_solutions, solutions_db,
+                      q_num_raw, points_val, q_text_buf, opts_buf, img_paths_buf,
+                      min_pts_cat, max_pts_cat, md_file_path, input_dir_path_obj):
+    """Helper to construct the question dictionary and add it to the list."""
+    if not q_text_buf or not opts_buf or points_val is None:
+        logging.debug(f"Skipping question finalization due to missing text, options, or points: q_num_raw={q_num_raw}, md_file_path={md_file_path}")
+        return None
+
+    full_question_text = " ".join(q_text_buf).strip()
+    md_file_dir = Path(md_file_path).parent
+
+    # Create list of unique, ordered, absolute image paths for the JSON output
+    unique_ordered_abs_image_paths_for_json = []
+    seen_abs_paths_set = set()
+
+    for img_path_from_md_scan in img_paths_buf: # These are paths relative to MD file
+        try:
+            abs_path_obj = (md_file_dir / img_path_from_md_scan).resolve()
+            abs_path_str = abs_path_obj.as_posix()
+            if abs_path_str not in seen_abs_paths_set:
+                unique_ordered_abs_image_paths_for_json.append(abs_path_str)
+                seen_abs_paths_set.add(abs_path_str)
+        except Exception as e:
+            logging.warning(f"Error resolving or storing image path '{img_path_from_md_scan}' from {md_file_path}: {e}. Skipping this image path.")
+            # Continue to process other images
+
+    # Check if images belong to options rather than the question itself
+    images_are_options = False
+    
+    # Check if each option in opts_buf is just a label with no content (e.g., "(A) ", "(B) ")
+    empty_options = all(opt.strip().endswith(")") or opt.strip().endswith(") ") for opt in opts_buf)
+    
+    # If we have empty options and the same number of images as options, assume the images belong to the options
+    if empty_options and (len(unique_ordered_abs_image_paths_for_json) >= len(opts_buf) - 1):
+        images_are_options = True
+
+    # Replace MD image tags with placeholders, or remove if they belong to options
+    def replace_md_image_with_placeholder_tag(match, context="question"):
+        markdown_relative_path = match.group(1)
+        try:
+            # Resolve the path from the markdown text to an absolute path
+            abs_path_from_text = (md_file_dir / markdown_relative_path).resolve().as_posix()
+            # Find its 1-based index in our definitive list of image paths
+            if abs_path_from_text in unique_ordered_abs_image_paths_for_json:
+                image_index = unique_ordered_abs_image_paths_for_json.index(abs_path_from_text) + 1
+                # For question, include image placeholder only if images are not part of options
+                if context == "question" and images_are_options:
+                    return "" # Remove image from question if it belongs to an option
+                return f"<image {image_index}>"
+            else:
+                logging.warning(f"Image '{markdown_relative_path}' (resolved: {abs_path_from_text}) from {context} text '{q_num_raw}' in {md_file_path} not found in the collected image list. Original tag kept.")
+                return match.group(0) # Keep original markdown tag
+        except Exception as e:
+            logging.error(f"Error during image tag replacement for '{markdown_relative_path}' in {md_file_path}: {e}. Original tag kept.")
+            return match.group(0) # Keep original markdown tag on error
+
+    # Replace image tags in question text
+    modified_full_question_text = image_regex.sub(lambda m: replace_md_image_with_placeholder_tag(m, "question"), full_question_text)
+    modified_full_question_text = modified_full_question_text.strip()
+    
+    # Process options if necessary
+    modified_opts_buf = []
+    if images_are_options:
+        # Assign each image to its respective option
+        for i, opt in enumerate(opts_buf):
+            if i < len(unique_ordered_abs_image_paths_for_json):
+                image_index = i + 1  # 1-based index
+                modified_opts_buf.append(f"{opt.strip()} <image {image_index}>")
+            else:
+                modified_opts_buf.append(opt)
+    else:
+        modified_opts_buf = opts_buf
+    
+    year_str = str(year).strip()
+    solution_char = "N/A" # Default if no solution found
+
+    if year_str in solutions_db:
+        if grade_str_key_solutions in solutions_db[year_str]:
+            current_solutions_for_grade = solutions_db[year_str][grade_str_key_solutions]
+            solution_keys_from_db = list(current_solutions_for_grade.keys())
+
+            # Attempt 1: Direct match with q_num_raw (e.g., "A1" from exam matches "A1" in solutions)
+            if q_num_raw in current_solutions_for_grade:
+                solution_char = current_solutions_for_grade[q_num_raw]
+            else:
+                # Attempt 2: Sort keys like A1, A2, B1, B2 or 1, 2
+                def natural_sort_key_for_solutions(key_str):
+                    match = re.match(r'([ABCabc])?(\d+)', key_str)
+                    if match:
+                        letter_part, num_part = match.groups()
+                        if letter_part: # A, B, or C
+                            letter_val = {'a': 0, 'b': 1, 'c': 2}.get(letter_part.lower(), 3)
+                            return (letter_val, int(num_part))
+                        else: # Just a number
+                            return (4, int(num_part)) # Numeric keys after C, or if no A/B/C sections
+                    return (5, key_str) # Fallback for completely unexpected keys (sort last)
+
+                sorted_solution_keys = sorted(solution_keys_from_db, key=natural_sort_key_for_solutions)
+                
+                fallback_key_used = None
+                # Handle numeric q_num_raw (e.g. "5") mapping to solution keys
+                if q_num_raw.isdigit():
+                    try:
+                        # Map numeric q_num_raw to corresponding solution key by index
+                        target_idx = int(q_num_raw) - 1 
+                        if 0 <= target_idx < len(sorted_solution_keys):
+                            potential_fallback_key = sorted_solution_keys[target_idx]
+                            solution_char = current_solutions_for_grade[potential_fallback_key]
+                            fallback_key_used = potential_fallback_key
+                            logging.info(
+                                f"Solution for numeric task '{q_num_raw}' (exam) found using fallback index {target_idx} "
+                                f"(solution key: '{potential_fallback_key}') in {md_file_path} for {year_str}/{grade_str_key_solutions}."
+                            )
+                    except ValueError:
+                        logging.error(f"ValueError converting q_num_raw '{q_num_raw}' to int after isdigit check. File: {md_file_path}")
+                        pass 
+                
+                if fallback_key_used is None:
+                    logging.warning(
+                        f"Solution not found for Task '{q_num_raw}' (exam key) for Year {year_str}, Grade {grade_str_key_solutions} in {md_file_path}."
+                    )
+                    if not solution_keys_from_db:
+                        logging.warning(f"  No solution keys available in solutions_db for {year_str}/{grade_str_key_solutions}.")
                     else:
-                        solution_map[key] = None # Or log a warning if answer format is unexpected
-            i += 3
-            continue
-        i += 1
-    return solution_map
+                        logging.warning(f"  Exam task key: '{q_num_raw}'. Available solution keys from DB: {solution_keys_from_db}")
+                        logging.warning(f"  Attempted sorted solution keys for fallback: {sorted_solution_keys}")
+        else: # Grade key not found for the year
+            logging.warning(f"Grade key '{grade_str_key_solutions}' not found for Year {year_str} in solutions_db (for file {md_file_path}).")
+            if year_str in solutions_db:
+                 logging.warning(f"  Available grade keys for Year {year_str}: {list(solutions_db[year_str].keys())}")
+            else:
+                 logging.warning(f"  Year {year_str} has no entries in solutions_db.")
+    else: # Year not found in solutions_db
+        logging.warning(f"Year '{year_str}' not found in solutions_db (for file {md_file_path}).")
+        logging.warning(f"  Available years in solutions_db: {list(solutions_db.keys())}")
 
-
-def compute_difficulty(q):
-    """
-    Compute difficulty score [0,1] from grade, points, and length.
-    Falls back to default values if required fields are missing.
-    """
-    if q.get('grade_min') is None or q.get('grade_max') is None: # Use .get for safer access
-        logging.warning(f"Missing grade range for question {q.get('id', 'Unknown ID')}, using default avg_grade=8")
-        avg_grade = 8
-    else:
-        avg_grade = (q['grade_min'] + q['grade_max']) / 2
-
-    if q.get('points') is None:
-        logging.warning(f"Missing points for question {q.get('id', 'Unknown ID')}, using default points=4 (average). Question will have difficulty based on this default.")
-        points = 4 # Default points if not found
-    else:
-        points = q['points']
-
-    g_norm = (avg_grade - 3) / (13 - 3)  # Assuming grades 3-13
-    p_norm = (points - 3) / (5 - 3)    # Assuming points 3-5
-    
-    question_text = q.get('question', '')
-    l_norm = math.log1p(len(question_text)) / math.log1p(250) # log1p for stability if len is 0
-    
-    raw = 0.6 * g_norm + 0.3 * p_norm + 0.1 * l_norm
-    difficulty = 1 / (1 + math.exp(-12 * (raw - 0.5)))
-    return difficulty
-
+    avg_grade = (grade_min + grade_max) / 2.0
+    difficulty = calculate_difficulty(avg_grade, points_val, min_pts_cat, max_pts_cat)
+    mmmu_id = f"MathKangaroo_{year_str}_{grade_min}-{grade_max}_{q_num_raw.replace('.', '')}"
+    return {
+        "id": mmmu_id,
+        "question_type": "multiple-choice",
+        "question": modified_full_question_text,
+        "options": modified_opts_buf,
+        "answer": solution_char,
+        "image_paths": unique_ordered_abs_image_paths_for_json,
+        "grade_level_raw": f"{grade_min}-{grade_max}",
+        "grade_level_min": grade_min,
+        "grade_level_max": grade_max,
+        "year": year,
+        "points": points_val,
+        "question_number_raw": q_num_raw,
+        "question_difficulty": difficulty
+    }
 
 def main():
-    parser = argparse.ArgumentParser(description='Process Känguru exams and solutions')
-    parser.add_argument('input_dir', help='Directory containing exam and solution markdowns')
-    parser.add_argument('--build-index', action='store_true')
+    parser = argparse.ArgumentParser(description="Parse Math Kangaroo exam papers to MMMU format.")
+    parser.add_argument("input_dir", help="Directory path containing the Markdown exam files and the solution file.")
+    parser.add_argument("--build-index", action="store_true", help="Save the built dataset as a single Parquet file.")
     args = parser.parse_args()
 
-    inp = Path(args.input_dir)
-    out = OUTPUT_DIR # Already created at the top
+    input_dir_path = Path(args.input_dir).resolve()
+    script_dir = Path(__file__).parent.resolve()
+    output_dir_base = (script_dir / ".." / OUTPUT_BASE_DIR_NAME).resolve()
 
-    logging.info(f"Input directory: {inp.resolve()}")
-    logging.info(f"Output directory: {out.resolve()}")
-    logging.debug(f"Log file path: {log_file_path.resolve()}")
+    if not input_dir_path.is_dir():
+        logging.error(f"Input directory '{args.input_dir}' not found or not a directory.")
+        return
 
-    all_md_files = list(inp.glob('*_ocr_result.md'))
+    solution_file_path = input_dir_path / SOLUTIONS_FILENAME
+    if not solution_file_path.exists():
+        logging.error(f"Solution file '{SOLUTIONS_FILENAME}' not found in '{args.input_dir}'.")
+        return
 
-    solutions_filename = 'kaenguru_loesungen_alle_ocr_result.md'
-    sol_file = inp / solutions_filename
+    logging.info("Parsing solutions...")
+    solutions_db = parse_solutions(solution_file_path)
+    if not solutions_db:
+        logging.error("Failed to parse solutions. Exiting.")
+        return
+    logging.debug(f"Solutions DB loaded for years: {list(solutions_db.keys())}")
 
-    exam_files = [f for f in all_md_files if f.name != solutions_filename]
+    all_questions_for_parquet = []
 
-    questions = {}
-    # Use tqdm for progress bar over exam files
-    for ef in tqdm(exam_files, desc="Processing Exam Files", unit="file"):
-        logging.info(f"Processing exam file: {ef.name}")
-        
-        file_year, file_grade_min, file_grade_max = parse_filename_info(ef.name)
-        
-        if file_year is None or file_grade_min is None or file_grade_max is None:
-            logging.warning(f"Could not parse required year/grade information from filename: {ef.name}. Skipping this file.")
+    logging.info("Processing exam files...")
+    for md_file in input_dir_path.glob("*_ocr_result.md"):
+        if md_file.name == SOLUTIONS_FILENAME:
             continue
-        try:
-            parsed_questions = parse_exam_md(ef, file_year, file_grade_min, file_grade_max)
-            questions.update(parsed_questions)
-        except Exception as e:
-            logging.error(f"Failed to parse exam file {ef.name}: {e}", exc_info=True)
 
+        logging.info(f"  Parsing {md_file.name}...")
+        year, grade_min, grade_max, grade_str_display = parse_exam_filename(md_file.name)
 
-    solutions = {}
-    if sol_file.is_file():
-        logging.info(f"Parsing solutions file: {sol_file.name}")
-        try:
-            solutions = parse_solutions_md(sol_file)
-        except Exception as e:
-            logging.error(f"Failed to parse solutions file {sol_file.name}: {e}", exc_info=True)
-    else:
-        logging.warning(f"Solutions file not found: {sol_file}. Answers will not be populated.")
-
-    records = []
-    # Use tqdm for progress bar over processing questions for output/index
-    for qid, q_data in tqdm(questions.items(), desc="Finalizing Questions", unit="question"):
-        q_data['answer'] = solutions.get(qid) # qid should be consistent
-        
-        try:
-            q_data['difficulty'] = compute_difficulty(q_data)
-        except Exception as e:
-            logging.error(f"Error computing difficulty for {qid}: {e}", exc_info=True)
-            q_data['difficulty'] = None # Assign a default or None if computation fails
-        
-        year = q_data.get('year') # Use .get for safety
-        if not isinstance(year, int):
-            logging.error(f"Skipping question {qid} due to invalid year type: {type(year)}. Data: {q_data}")
+        if year is None:
+            logging.warning(f"    Skipping {md_file.name} due to filename parsing error.")
             continue
+        
+        grade_key_for_solutions = f"{grade_min}-{grade_max}"
+
+        questions = parse_exam_file(md_file, year, grade_min, grade_max, grade_key_for_solutions, solutions_db, input_dir_path)
+
+        if not questions:
+            logging.warning(f"    No questions extracted from {md_file.name}.")
+            continue
+
+        # Create year-specific output directory
+        year_str = str(year).strip()
+        year_output_dir = output_dir_base / year_str
+        year_output_dir.mkdir(parents=True, exist_ok=True)
+
+        for q_data in questions:
+            if q_data is None: continue
+            # Generate filename for individual JSON
+            # id: MathKangaroo_2000_3-4_A1
+            json_filename = f"{q_data['id']}.json"
+            json_file_path = year_output_dir / json_filename
             
-        dest = out / str(year)
-        dest.mkdir(exist_ok=True) # Parent 'out' dir already exists
+            try:
+                with open(json_file_path, 'w', encoding='utf-8') as jf:
+                    json.dump(q_data, jf, ensure_ascii=False, indent=4)
+            except IOError as e:
+                logging.error(f"Error writing JSON file {json_file_path}: {e}")
+
+
+            if args.build_index:
+                all_questions_for_parquet.append(q_data)
         
-        json_file_path = dest / f"{qid}.json"
-        try:
-            with open(json_file_path, 'w', encoding='utf-8') as f:
-                json.dump(q_data, f, ensure_ascii=False, indent=2)
-        except IOError as e:
-            logging.error(f"Cannot write JSON for question {qid} to {json_file_path}: {e}", exc_info=True)
-            continue # Skip adding to index if file cannot be written
+        logging.info(f"    Successfully processed {md_file.name}, extracted {len(questions)} questions.")
+
+    if args.build_index:
+        if all_questions_for_parquet:
+            logging.info(f"\nBuilding Parquet index for {len(all_questions_for_parquet)} questions...")
+            df = pd.DataFrame(all_questions_for_parquet)
+            parquet_output_dir = output_dir_base
+            parquet_output_dir.mkdir(parents=True, exist_ok=True)
+            parquet_file_path = parquet_output_dir / "math_kangaroo_dataset.parquet"
+            try:
+                df.to_parquet(parquet_file_path, index=False)
+                logging.info(f"Successfully saved Parquet index to {parquet_file_path}")
+            except Exception as e:
+                logging.error(f"Error saving Parquet file: {e}")
+                logging.error("Please ensure you have 'pyarrow' and 'pandas' installed ('pip install pandas pyarrow').")
+        else:
+            logging.warning("\nNo questions collected to build Parquet index.")
             
-        if args.build_index:
-            rec = q_data.copy()
-            rec['path_json'] = str(json_file_path.resolve()) # Use resolved path for index
-            records.append(rec)
+    logging.info("\nProcessing complete.")
 
-    if args.build_index and records:
-        df = pd.DataFrame.from_records(records)
-        
-        # Always save index in the dataset directory
-        index_output_path = OUTPUT_DIR / INDEX_FILENAME
-        logging.info(f"Attempting to write index to: {index_output_path.resolve()}")
-        
-        try:
-            df.to_parquet(index_output_path)
-            logging.info(f"Index successfully written to {index_output_path.resolve()}")
-        except Exception as e:
-            logging.error(f"An error occurred while writing the index to {index_output_path.resolve()}: {e}", exc_info=True)
-    elif args.build_index: # If --build-index was true but no records
-        logging.info("No records were processed, so the index was not built.")
+if __name__ == "__main__":
+    # Set up logging
+    for handler in logging.root.handlers[:]:
+        logging.root.removeHandler(handler)
 
-
-if __name__ == '__main__':
+    log_handler = logging.FileHandler(str(LOG_FILENAME), mode='w', encoding='utf-8')
+    log_handler.setLevel(logging.DEBUG)
+    formatter = logging.Formatter('%(asctime)s %(levelname)s: %(message)s')
+    log_handler.setFormatter(formatter)
+    logging.getLogger().addHandler(log_handler)
+    logging.getLogger().setLevel(logging.DEBUG)
     main()

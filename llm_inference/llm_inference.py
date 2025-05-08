@@ -536,6 +536,8 @@ def process_results_with_progress(
     df['response_status'] = None
     df['was_truncated'] = None
     df['generation_cost'] = 0.0  # Initialize cost tracking
+    df['input_tokens'] = 0  # Track prompt tokens
+    df['output_tokens'] = 0  # Track completion tokens
     
     # Process each result
     for result in results:
@@ -578,6 +580,15 @@ def process_results_with_progress(
             else:
                 logging.warning(f"Missing cost information for question {question_id}")
                 df.at[idx, 'generation_cost'] = 0.0
+            
+            # Extract token usage if available
+            if 'usage' in result['response']:
+                usage = result['response']['usage']
+                df.at[idx, 'input_tokens'] = int(usage.get('prompt_tokens', 0))
+                df.at[idx, 'output_tokens'] = int(usage.get('completion_tokens', 0))
+            else:
+                df.at[idx, 'input_tokens'] = 0
+                df.at[idx, 'output_tokens'] = 0
             
         except Exception as e:
             logging.error(f"Error processing result: {e}")
@@ -688,7 +699,7 @@ def generate_final_outputs_with_progress(
     df: pd.DataFrame,
     results: List[Dict[str, Any]],
     output_dir: Path
-) -> None:
+) -> Tuple[Dict[str, Any], List[str]]:
     """Generate final output files and metrics with progress bar."""
     # Create progress bar for generating outputs
     pbar = tqdm(total=5, desc="Generating final outputs", unit="file")
@@ -703,7 +714,13 @@ def generate_final_outputs_with_progress(
     pbar.update(1)
     
     # 2. Generate metrics.json
-    total_cost = float(df['generation_cost'].sum()) / 100
+    total_cost = float(df['generation_cost'].sum())
+    # Robust success rate calculation: only consider rows with non-null response_status
+    valid_status = df['response_status'].notna()
+    if valid_status.any():
+        success_rate = float((df.loc[valid_status, 'response_status'] == 200).mean())
+    else:
+        success_rate = None
     metrics = {
         "overall": {
             "total_questions": int(len(df)),
@@ -715,9 +732,14 @@ def generate_final_outputs_with_progress(
             "average_latency_ms": float(df['response_latency'].mean() * 1000),
             "p95_latency_ms": float(df['response_latency'].quantile(0.95) * 1000),
             "p99_latency_ms": float(df['response_latency'].quantile(0.99) * 1000),
-            "success_rate": float((df['response_status'] == 200).mean()),
+            "success_rate": success_rate,
             "total_cost_dollars": total_cost,
-            "average_cost_per_question": float(df['generation_cost'].mean()) / 100
+            "average_cost_per_question": float(df['generation_cost'].mean()),
+            "total_input_tokens": int(df['input_tokens'].sum()),
+            "total_output_tokens": int(df['output_tokens'].sum()),
+            "total_tokens": int(df['input_tokens'].sum() + df['output_tokens'].sum()),
+            "average_input_tokens": float(df['input_tokens'].mean()),
+            "average_output_tokens": float(df['output_tokens'].mean())
         },
         "per_year": {}
     }
@@ -733,8 +755,13 @@ def generate_final_outputs_with_progress(
             "accuracy": float(year_df['is_correct'].mean()) if year_df['is_correct'].notna().any() else None,
             "average_latency_ms": float(year_df['response_latency'].mean() * 1000),
             "success_rate": float((year_df['response_status'] == 200).mean()),
-            "total_cost_dollars": float(year_df['generation_cost'].sum()) / 100,
-            "average_cost_per_question": float(year_df['generation_cost'].mean()) / 100
+            "total_cost_dollars": float(year_df['generation_cost'].sum()),
+            "average_cost_per_question": float(year_df['generation_cost'].mean()),
+            "total_input_tokens": int(year_df['input_tokens'].sum()),
+            "total_output_tokens": int(year_df['output_tokens'].sum()),
+            "total_tokens": int(year_df['input_tokens'].sum() + year_df['output_tokens'].sum()),
+            "average_input_tokens": float(year_df['input_tokens'].mean()),
+            "average_output_tokens": float(year_df['output_tokens'].mean())
         }
         metrics["per_year"][str(int(year))] = year_metrics
     
@@ -788,25 +815,16 @@ def generate_final_outputs_with_progress(
     generate_human_readable_report(df, output_dir)
     pbar.update(1)
     
-    # 5. Print summary to stdout
-    print("\n=== Summary ===")
-    print(f"Total questions: {metrics['overall']['total_questions']}")
-    print(f"Answered questions: {metrics['overall']['answered_questions']}")
-    print(f"Correct answers: {metrics['overall']['correct_answers']}")
-    print(f"Truncated responses: {metrics['overall']['truncated_responses']}")
-    print(f"Overall accuracy: {metrics['overall']['accuracy']:.2%}")
-    print(f"Average latency: {metrics['overall']['average_latency_ms']:.1f}ms")
-    print(f"P95 latency: {metrics['overall']['p95_latency_ms']:.1f}ms")
-    print(f"P99 latency: {metrics['overall']['p99_latency_ms']:.1f}ms")
-    print(f"Success rate: {metrics['overall']['success_rate']:.2%}")
-    print(f"Total cost: ${metrics['overall']['total_cost_dollars']:.3f}")
-    print(f"Average cost per question: ${metrics['overall']['average_cost_per_question']:.5f}")
-    print("\nHuman-readable overview files saved to:")
-    print(f"  - {output_dir / 'question_answers_overview.csv'}")
-    print(f"  - {output_dir / 'question_answers_overview.txt'}")
+    # 5. (Summary printout removed; will be printed at the end of main_async)
     pbar.update(1)
     
     pbar.close()
+    
+    # Return metrics and output file paths for final summary
+    return metrics, [
+        output_dir / 'question_answers_overview.csv',
+        output_dir / 'question_answers_overview.txt'
+    ]
 
 
 async def main_async():
@@ -885,7 +903,7 @@ async def main_async():
     processed_df = process_results_with_progress(results, filtered_df, output_dir)
     
     # Generate final outputs with progress bar
-    generate_final_outputs_with_progress(processed_df, results, output_dir)
+    metrics, overview_files = generate_final_outputs_with_progress(processed_df, results, output_dir)
     
     # Calculate total time taken
     total_time = time.time() - start_time
@@ -909,8 +927,8 @@ async def main_async():
         "accuracy": float(processed_df['is_correct'].mean()) if processed_df['is_correct'].notna().any() else None,
         "total_time_seconds": total_time,
         "average_time_per_query_seconds": avg_time_per_query,
-        "total_cost_dollars": float(processed_df['generation_cost'].sum()) / 100,
-        "average_cost_per_question": float(processed_df['generation_cost'].mean()) / 100
+        "total_cost_dollars": float(processed_df['generation_cost'].sum()),
+        "average_cost_per_question": float(processed_df['generation_cost'].mean())
     }
     
     # Save configuration
@@ -936,16 +954,24 @@ async def main_async():
     logging.info(f"Average cost per question: ${config['average_cost_per_question']:.5f}")
     logging.info(f"Accuracy: {config['accuracy']:.2%}" if config['accuracy'] is not None else "Accuracy: N/A")
     
+    # Print consolidated summary combining all statistics
     print("\n=== Inference Complete ===")
     print(f"Results saved to: {output_dir}")
-    print(f"Total questions processed: {len(filtered_df)}")
-    print(f"Successful requests: {config['successful_requests']}/{config['total_requests']}")
-    print(f"Average latency: {config['average_latency']:.2f}s")
+    print("\n=== Summary ===")
+    print(f"Total questions: {metrics['overall']['total_questions']}")
+    print(f"Answered questions: {metrics['overall']['answered_questions']}")
+    print(f"Correct answers: {metrics['overall']['correct_answers']}")
+    print(f"Truncated responses: {metrics['overall']['truncated_responses']}")
+    print(f"Overall accuracy: {metrics['overall']['accuracy']:.2%}")
+    print(f"Total requests: {config['total_requests']}")
+    print(f"Successful requests: {config['successful_requests']}/{config['total_requests']} ({metrics['overall']['success_rate']:.2%})")
+    print(f"Average latency: {metrics['overall']['average_latency_ms']:.1f}ms")
     print(f"Total time taken: {str(timedelta(seconds=int(total_time)))}")
     print(f"Average time per query: {avg_time_per_query:.2f}s")
-    print(f"Total cost: ${config['total_cost_dollars']:.3f}")
-    print(f"Average cost per question: ${config['average_cost_per_question']:.5f}")
-    print(f"Final accuracy: {config['accuracy']:.2%}" if config['accuracy'] is not None else "Accuracy: N/A")
+    print(f"Total cost: ${metrics['overall']['total_cost_dollars']:.3f}")
+    print(f"Average cost per question: ${metrics['overall']['average_cost_per_question']:.5f}")
+    # Print token stats in one line
+    print(f"Token usage: avg input {metrics['overall']['average_input_tokens']:.1f}, avg output {metrics['overall']['average_output_tokens']:.1f}, total processed {metrics['overall']['total_tokens']}")
     print("=" * 30 + "\n")
 
 

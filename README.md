@@ -247,10 +247,10 @@ python llm_inference/llm_inference.py path/to/dataset.parquet
 python llm_inference/llm_inference.py path/to/dataset.parquet --model anthropic/claude-3-opus-20240229 --output_dir outputs/claude3
 ```
 
-#### Configure Batch Processing
+#### Control Concurrency
 
 ```bash
-python llm_inference/llm_inference.py path/to/dataset.parquet --batch_size 5 --concurrency 3
+python llm_inference/llm_inference.py path/to/dataset.parquet --concurrency 3
 ```
 
 #### Enable Reasoning Mode
@@ -278,7 +278,6 @@ This will write detailed debug-level logs to the log files (`llm_inference.log` 
 - `input_file` (required): Path to Kangaroo dataset .parquet file
 - `--model`: OpenRouter model slug (default: "google/gemini-2.5-flash-preview")
 - `--output-dir`: Directory to save output files (default: "llm_outputs")
-- `--batch-size`: Number of samples to process in each batch (default: 1)
 - `--max-retries`: Maximum number of retries for failed API calls (default: 3)
 - `--concurrency`: Number of concurrent API calls (default: 1)
 - `--reasoning`: Enable reasoning mode for step-by-step problem solving
@@ -307,6 +306,7 @@ The script evaluates model performance with several metrics:
 - Success rate: Percentage of successful API calls
 - Error rate: Percentage of questions that resulted in errors
 - Truncation rate: Percentage of responses that were truncated
+- Token usage: Average and total input/output tokens processed
 - A detailed console summary is printed at the end of each run
 
 ### Example Output

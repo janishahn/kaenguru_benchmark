@@ -293,75 +293,35 @@ async def make_openrouter_request_async(
             raise e
 
 
-async def process_batch(
-    prompts: List[str],
-    model: str,
-    max_retries: int,
-    output_dir: Path,
-    batch_num: int,
-    max_tokens: int,
-    is_reasoning: bool,
-    concurrency: int,
-    pbar: tqdm
-) -> List[Dict[str, Any]]:
-    """Process a batch of prompts asynchronously with controlled concurrency."""
-    # Create a semaphore to limit concurrent requests
-    semaphore = asyncio.Semaphore(concurrency)
-    
-    batch_task_results = []  # Renamed 'results' to avoid conflict, will collect results here
-    async with aiohttp.ClientSession() as session:
-        tasks = [
-            make_openrouter_request_async(
-                session, prompt, model, max_retries, max_tokens, is_reasoning, semaphore
-            )
-            for prompt in prompts  # 'prompts' here is the current batch
-        ]
-        
-        # Process tasks as they complete and update progress bar for each
-        for future in asyncio.as_completed(tasks):
-            result = await future
-            batch_task_results.append(result)
-            pbar.update(1)  # Update progress bar by 1 for each completed prompt
-        
-        # Save batch results
-        batch_file = output_dir / f"batch_{batch_num:03d}_results.json"
-        with open(batch_file, "w") as f:
-            json.dump(batch_task_results, f, indent=2)  # Use the collected results
-        
-        return batch_task_results  # Return the collected results
-
-
 async def process_all_prompts(
     prompts: List[str],
     model: str,
-    batch_size: int,
     max_retries: int,
     output_dir: Path,
     max_tokens: int,
     is_reasoning: bool,
     concurrency: int
 ) -> List[Dict[str, Any]]:
-    """Process all prompts in batches with controlled concurrency."""
+    """Process all prompts asynchronously with controlled concurrency (no batching)."""
     all_results = []
-    
-    # Create progress bar
     pbar = tqdm(total=len(prompts), desc="Processing questions", unit="q")
-    
-    for i in range(0, len(prompts), batch_size):
-        batch = prompts[i:i + batch_size]
-        batch_num = i // batch_size + 1
-        logging.info(f"Processing batch {batch_num} ({len(batch)} prompts) with concurrency {concurrency}")
-        
-        batch_results = await process_batch(
-            batch, model, max_retries, output_dir, batch_num, max_tokens, is_reasoning, concurrency, pbar
-        )
-        all_results.extend(batch_results)
-        
-        # Save progress after each batch
-        progress_file = output_dir / "all_results.json"
-        with open(progress_file, "w") as f:
-            json.dump(all_results, f, indent=2)
-    
+    semaphore = asyncio.Semaphore(concurrency)
+    async with aiohttp.ClientSession() as session:
+        tasks = [
+            make_openrouter_request_async(
+                session, prompt, model, max_retries, max_tokens, is_reasoning, semaphore
+            )
+            for prompt in prompts
+        ]
+        for i, future in enumerate(asyncio.as_completed(tasks), 1):
+            result = await future
+            all_results.append(result)
+            pbar.update(1)
+            # Optionally save progress every 50 results
+            if i % 50 == 0 or i == len(prompts):
+                progress_file = output_dir / "all_results.json"
+                with open(progress_file, "w") as f:
+                    json.dump(all_results, f, indent=2)
     pbar.close()
     return all_results
 
@@ -890,7 +850,6 @@ async def main_async():
     results = await process_all_prompts(
         messages,
         args.model,
-        args.batch_size,
         args.max_retries,
         output_dir,
         args.max_tokens,

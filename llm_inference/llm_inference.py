@@ -6,7 +6,7 @@ import pandas as pd
 from datetime import datetime
 from pathlib import Path
 import logging
-from typing import List, Dict, Any, Tuple, Set
+from typing import List, Dict, Any, Tuple
 import time
 import json
 import asyncio
@@ -15,6 +15,7 @@ import re
 from collections import Counter
 from dotenv import load_dotenv
 from tqdm import tqdm
+import traceback
 
 # Required columns in the input parquet file
 REQUIRED_COLUMNS = {
@@ -262,11 +263,17 @@ async def make_openrouter_request_async(
                 if response.status >= 500 or response.status == 429:  # Rate limit
                     if attempt < max_retries:
                         wait_time = min(2 ** attempt, 60)  # Exponential backoff, max 60 seconds
-                        logging.warning(f"Request failed (attempt {attempt}/{max_retries}). Retrying in {wait_time} seconds...")
+                        logging.debug(f"API request error (attempt {attempt}/{max_retries}): Status {response.status}, Prompt ID: {prompt[:100]}...")
+                        logging.debug(f"Response body: {response_json}")
+                        logging.debug(f"Retrying in {wait_time} seconds...")
+                        logging.warning(f"API request failed (attempt {attempt}/{max_retries}). Retrying in {wait_time} seconds...")
                         await asyncio.sleep(wait_time)
                         return await make_openrouter_request_async(
                             session, prompt, model, max_retries, max_tokens, is_reasoning, semaphore, attempt + 1
                         )
+                elif response.status != 200:
+                    logging.debug(f"API request non-200 status: {response.status}, Prompt ID: {prompt[:100]}...")
+                    logging.debug(f"Response body: {response_json}")
                 
                 return {
                     "request": body,
@@ -276,9 +283,12 @@ async def make_openrouter_request_async(
                 }
                 
         except Exception as e:
+            logging.debug(f"Exception during API request (attempt {attempt}/{max_retries}), Prompt ID: {prompt[:100]}...")
+            logging.debug(f"Exception type: {type(e).__name__}, Message: {e}")
+            logging.debug(traceback.format_exc())
             if attempt < max_retries:
                 wait_time = min(2 ** attempt, 60)
-                logging.warning(f"Request failed (attempt {attempt}/{max_retries}). Retrying in {wait_time} seconds...")
+                logging.warning(f"API request failed due to exception (attempt {attempt}/{max_retries}). Retrying in {wait_time} seconds...")
                 await asyncio.sleep(wait_time)
                 return await make_openrouter_request_async(
                     session, prompt, model, max_retries, max_tokens, is_reasoning, semaphore, attempt + 1

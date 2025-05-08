@@ -265,6 +265,14 @@ python llm_inference/llm_inference.py path/to/dataset.parquet --reasoning
 python llm_inference/llm_inference.py path/to/dataset.parquet --max_tokens 8000
 ```
 
+#### Enable Debug Logging (Log Files Only)
+
+```bash
+python llm_inference/llm_inference.py path/to/dataset.parquet --debug
+```
+
+This will write detailed debug-level logs to the log files (`llm_inference.log` and `preprocessing.log`), but the console will still only show warnings and above.
+
 ### Command Line Arguments
 
 - `input_file` (required): Path to Kangaroo dataset .parquet file
@@ -275,6 +283,7 @@ python llm_inference/llm_inference.py path/to/dataset.parquet --max_tokens 8000
 - `--concurrency`: Number of concurrent API calls (default: 1)
 - `--reasoning`: Enable reasoning mode for step-by-step problem solving
 - `--max-tokens`: Maximum number of tokens to generate (default: 4000, increased for reasoning)
+- `--debug`: Enable debug-level logging to log files (not console)
 
 ### Output Structure
 

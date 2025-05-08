@@ -28,7 +28,7 @@ REQUIRED_COLUMNS = {
 }
 
 
-def setup_logging(output_dir: Path) -> None:
+def setup_logging(output_dir: Path, debug: bool = False) -> None:
     """Set up logging configuration."""
     # Create log file in the script's directory
     script_dir = Path(__file__).parent
@@ -47,28 +47,25 @@ def setup_logging(output_dir: Path) -> None:
     # Create and configure file handlers
     script_handler = logging.FileHandler(script_log_file, mode='a')  # Append mode
     script_handler.setFormatter(formatter)
-    script_handler.setLevel(logging.INFO)
+    script_handler.setLevel(logging.DEBUG if debug else logging.INFO)
     
     run_handler = logging.FileHandler(run_log_file, mode='w')  # Write mode (overwrite)
     run_handler.setFormatter(formatter)
-    run_handler.setLevel(logging.INFO)
+    run_handler.setLevel(logging.DEBUG if debug else logging.INFO)
     
     # Create and configure console handler - only show WARNING and above
     console_handler = logging.StreamHandler()
     console_handler.setFormatter(formatter)
-    console_handler.setLevel(logging.WARNING)  # Changed from INFO to WARNING
+    console_handler.setLevel(logging.WARNING)
     
     # Configure root logger
     root_logger = logging.getLogger()
-    root_logger.setLevel(logging.INFO)  # Keep root logger at INFO to capture all messages
+    root_logger.setLevel(logging.DEBUG if debug else logging.INFO)
     root_logger.addHandler(script_handler)
     root_logger.addHandler(run_handler)
     root_logger.addHandler(console_handler)
     
     # Log initial messages to files only
-    script_handler.setLevel(logging.INFO)
-    run_handler.setLevel(logging.INFO)
-    console_handler.setLevel(logging.WARNING)
     logging.info(f"Logging to script log file: {script_log_file}")
     logging.info(f"Logging to run log file: {run_log_file}")
 
@@ -149,7 +146,7 @@ def filter_multimodal_items(df: pd.DataFrame) -> pd.DataFrame:
         return False
     
     # Filter rows where image_paths is empty
-    filtered_df = df[~df['image_paths'].apply(has_images)]
+    filtered_df = df[~df['image_paths'].apply(has_images)].copy()
     
     final_count = len(filtered_df)
     logging.info(f"Filtered dataset size: {final_count} items")
@@ -429,6 +426,12 @@ def parse_args():
         type=int,
         default=10000,
         help="Maximum number of tokens to generate in response (will be increased for reasoning)"
+    )
+    
+    parser.add_argument(
+        "--debug",
+        action="store_true",
+        help="Enable debug logging to log files (not console)"
     )
     
     args = parser.parse_args()
@@ -832,7 +835,7 @@ async def main_async():
     output_dir = create_output_dir(Path(args.output_dir))
     
     # Set up logging
-    setup_logging(output_dir)
+    setup_logging(output_dir, debug=args.debug)
     
     # Load question data
     try:

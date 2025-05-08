@@ -801,10 +801,7 @@ def generate_final_outputs_with_progress(
     print(f"Success rate: {metrics['overall']['success_rate']:.2%}")
     print(f"Total cost: {metrics['overall']['total_cost_cents']:.2f} cents")
     print(f"Average cost per question: {metrics['overall']['average_cost_per_question']:.2f} cents")
-    print("\nPer-year accuracy:")
-    for year, year_metrics in sorted(metrics["per_year"].items()):
-        print(f"  Year {year}: {year_metrics['accuracy']:.2%} (Cost: {year_metrics['total_cost_cents']:.2f} cents)")
-    print(f"\nHuman-readable overview files saved to:")
+    print("\nHuman-readable overview files saved to:")
     print(f"  - {output_dir / 'question_answers_overview.csv'}")
     print(f"  - {output_dir / 'question_answers_overview.txt'}")
     pbar.update(1)

@@ -254,24 +254,41 @@ async def make_openrouter_request_async(
                 headers=headers,
                 json=body
             ) as response:
-                response_json = await response.json()
+                try:
+                    response_json = await response.json()
+                except asyncio.TimeoutError: # Timeout during response.json()
+                    latency = time.time() - start_time
+                    logging.warning(f"Timeout while reading response body (attempt {attempt}/{max_retries}). No retry for this specific timeout. Prompt ID: {prompt[:30]}...")
+                    return {
+                        "request": body,
+                        "response": {
+                            "error": "Response reading timed out",
+                            "choices": [{"message": {"content": "ERROR"}, "finish_reason": "timeout"}],
+                            "usage": {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0, "cost": 0}
+                        },
+                        "latency": latency,
+                        "status_code": 408 
+                    }
+                
                 latency = time.time() - start_time
                 
-                if response.status >= 500 or response.status == 429:  # Rate limit
+                # Retry logic for 5xx errors or 429 (rate limit)
+                if response.status >= 500 or response.status == 429:  
                     if attempt < max_retries:
                         wait_time = min(2 ** attempt, 60)  # Exponential backoff, max 60 seconds
                         logging.debug(f"API request error (attempt {attempt}/{max_retries}): Status {response.status}, Prompt ID: {prompt[:100]}...")
                         logging.debug(f"Response body: {response_json}")
                         logging.debug(f"Retrying in {wait_time} seconds...")
-                        logging.debug(f"API request failed (attempt {attempt}/{max_retries}). Retrying in {wait_time} seconds...")
                         await asyncio.sleep(wait_time)
                         return await make_openrouter_request_async(
                             session, prompt, model, max_retries, max_tokens, is_reasoning, semaphore, attempt + 1
                         )
+                    # If retries exhausted for 5xx/429, fall through to return the error response below
                 elif response.status != 200:
                     logging.debug(f"API request non-200 status: {response.status}, Prompt ID: {prompt[:100]}...")
                     logging.debug(f"Response body: {response_json}")
                 
+                # For successful or non-retried errors, return the result
                 return {
                     "request": body,
                     "response": response_json,
@@ -279,18 +296,43 @@ async def make_openrouter_request_async(
                     "status_code": response.status
                 }
                 
-        except Exception as e:
+        except asyncio.TimeoutError: # Timeout during session.post() (the request itself)
+            latency = time.time() - start_time
+            logging.warning(f"Request POST operation timed out (attempt {attempt}/{max_retries}). No retry for this specific timeout. Prompt ID: {prompt[:30]}...")
+            return {
+                "request": body,
+                "response": {
+                    "error": "Request POST timed out",
+                    "choices": [{"message": {"content": "ERROR"}, "finish_reason": "timeout"}],
+                    "usage": {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0, "cost": 0}
+                },
+                "latency": latency,
+                "status_code": 408
+            }
+        except Exception as e: # Catch other exceptions like connection errors, etc.
             logging.debug(f"Exception during API request (attempt {attempt}/{max_retries}), Prompt ID: {prompt[:100]}...")
             logging.debug(f"Exception type: {type(e).__name__}, Message: {e}")
             logging.debug(traceback.format_exc())
             if attempt < max_retries:
                 wait_time = min(2 ** attempt, 60)
-                logging.debug(f"API request failed due to exception (attempt {attempt}/{max_retries}). Retrying in {wait_time} seconds...")
+                logging.debug(f"API request failed due to exception: {type(e).__name__} (attempt {attempt}/{max_retries}). Retrying in {wait_time} seconds...")
                 await asyncio.sleep(wait_time)
                 return await make_openrouter_request_async(
                     session, prompt, model, max_retries, max_tokens, is_reasoning, semaphore, attempt + 1
                 )
-            raise e
+            
+            # If all retries failed for a general exception
+            latency = time.time() - start_time
+            return {
+                "request": body,
+                "response": {
+                    "error": f"Request failed: {str(e)}",
+                    "choices": [{"message": {"content": "ERROR"}, "finish_reason": "error"}],
+                    "usage": {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0, "cost": 0}
+                },
+                "latency": latency,
+                "status_code": 500  # Internal Server Error
+            }
 
 
 async def process_all_prompts(
@@ -304,25 +346,70 @@ async def process_all_prompts(
 ) -> List[Dict[str, Any]]:
     """Process all prompts asynchronously with controlled concurrency (no batching)."""
     all_results = []
-    pbar = tqdm(total=len(prompts), desc="Processing questions", unit="q")
+    pbar = tqdm(total=len(prompts), desc="Processing questions", unit="q", 
+                smoothing=0.8, miniters=1, mininterval=0.5)
     semaphore = asyncio.Semaphore(concurrency)
-    async with aiohttp.ClientSession() as session:
+    
+    # Configure longer timeouts for LLM API requests (5 minutes)
+    timeout = aiohttp.ClientTimeout(total=300, connect=30, sock_connect=30, sock_read=300)
+    
+    async with aiohttp.ClientSession(timeout=timeout) as session:
         tasks = [
             make_openrouter_request_async(
                 session, prompt, model, max_retries, max_tokens, is_reasoning, semaphore
             )
             for prompt in prompts
         ]
+        completed = 0
         for i, future in enumerate(asyncio.as_completed(tasks), 1):
-            result = await future
-            all_results.append(result)
-            pbar.update(1)
-            # Optionally save progress every 50 results
-            if i % 50 == 0 or i == len(prompts):
-                progress_file = output_dir / "all_results.json"
-                with open(progress_file, "w") as f:
-                    json.dump(all_results, f, indent=2)
+            try:
+                result = await future
+                all_results.append(result)
+                completed += 1
+                # Update progress bar only every few items for smoother estimates when responses come in batches
+                if completed % max(1, min(5, int(len(prompts) * 0.01))) == 0 or completed == len(prompts):
+                    pbar.update(1)
+                # Save each result individually for maximum robustness
+                if len(all_results) % 10 == 0 or len(all_results) == len(prompts):
+                    progress_file = output_dir / "all_results.json"
+                    with open(progress_file, "w") as f:
+                        json.dump(all_results, f, indent=2)
+            except asyncio.TimeoutError:
+                logging.debug(f"Request timed out after {timeout.total} seconds")
+                # Create a meaningful error result
+                error_result = {
+                    "request": {"messages": [{"content": prompts[i-1]}]},
+                    "response": {"error": "Request timed out"},
+                    "latency": timeout.total,
+                    "status_code": 408
+                }
+                all_results.append(error_result)
+                completed += 1
+                if completed % max(1, min(5, int(len(prompts) * 0.01))) == 0 or completed == len(prompts):
+                    pbar.update(1)
+            except Exception as e:
+                logging.debug(f"Error processing request: {e}")
+                error_result = {
+                    "request": {"messages": [{"content": prompts[i-1]}]},
+                    "response": {"error": f"Request failed: {str(e)}"},
+                    "latency": 0,
+                    "status_code": 500
+                }
+                all_results.append(error_result)
+                completed += 1
+                if completed % max(1, min(5, int(len(prompts) * 0.01))) == 0 or completed == len(prompts):
+                    pbar.update(1)
+    
+    # Ensure the progress bar reaches 100%
+    if pbar.n < pbar.total:
+        pbar.update(pbar.total - pbar.n)
     pbar.close()
+    
+    # Ensure final results are saved
+    progress_file = output_dir / "all_results.json"
+    with open(progress_file, "w") as f:
+        json.dump(all_results, f, indent=2)
+        
     return all_results
 
 
@@ -352,13 +439,6 @@ def parse_args():
         type=str,
         default="llm_outputs",
         help="Directory to save output files"
-    )
-    
-    parser.add_argument(
-        "--batch-size",
-        type=int,
-        default=1,
-        help="Number of samples to process in each batch"
     )
     
     parser.add_argument(
@@ -420,19 +500,41 @@ def parse_args():
     return args
 
 
-def extract_answer_from_response(response: Dict[str, Any]) -> str:
+def extract_answer_from_response(response_dict: Dict[str, Any]) -> str:
     """Extract answer from model response using MMMU strategy with enhanced robustness."""
     try:
-        # Check if response was truncated due to token limit
-        finish_reason = response["choices"][0].get("finish_reason")
+        # Check for errors reported by our own handlers (e.g. if result['response']['error'] exists)
+        if "error" in response_dict:
+            logging.warning(f"API response indicates an error condition: {response_dict['error']}")
+            # If 'choices' are also present and indicate timeout/error, that's fine.
+            # If 'choices' are missing, this is definitely an error that won't be parsed further.
+            if "choices" not in response_dict or not response_dict["choices"]:
+                return "ERROR"
+        
+        # Proceed to check choices if they exist
+        choice = response_dict["choices"][0]
+        finish_reason = choice.get("finish_reason")
+        content = choice["message"]["content"]
+
         if finish_reason == "length":
-            logging.warning("Response was truncated due to token limit")
+            logging.warning("Response was truncated due to token limit.")
             return "ERROR"
-            
-        content = response["choices"][0]["message"]["content"]
-    except (KeyError, IndexError):
+        if finish_reason == "timeout": # Set by our make_openrouter_request_async
+            logging.warning("Response finish_reason explicitly indicates 'timeout'.")
+            return "ERROR"
+        if content == "ERROR" and finish_reason in ["timeout", "error", None]: # Check None for safety
+            # This case handles when make_openrouter_request_async sets content to ERROR.
+            logging.warning(f"Response content is 'ERROR', likely from a failed/timed-out request (finish_reason: {finish_reason}).")
+            return "ERROR"
+
+    except (KeyError, IndexError, TypeError):
+        # This catches cases where 'choices', 'message', 'content' or other expected keys are missing.
+        # This handles the structure from process_all_prompts's direct timeout: {"error": "Request timed out"}
+        # or any other malformed successful-looking response.
+        logging.warning(f"Malformed response structure when extracting answer. Details: {str(response_dict)[:200]}")
         return "ERROR"
     
+    # --- Original MMMU answer extraction logic starts here ---
     # Try to find the answer at the end of the text first (priority for reasoning outputs)
     # Look for patterns like "The answer is X" or "Therefore, X" near the end
     final_answer_patterns = [
@@ -474,6 +576,7 @@ def extract_answer_from_response(response: Dict[str, Any]) -> str:
     if letters:
         return Counter(letters).most_common(1)[0][0]
     
+    logging.warning(f"Could not extract a valid A-E answer from content: {content[:100]}...")
     return "ERROR"
 
 
@@ -484,7 +587,8 @@ def process_results_with_progress(
 ) -> pd.DataFrame:
     """Process results and add model answers to dataframe with progress bar."""
     # Create progress bar for processing results
-    pbar = tqdm(total=len(results), desc="Processing results", unit="result")
+    pbar = tqdm(total=len(results), desc="Processing results", unit="result", 
+                smoothing=0.7, miniters=1)
     
     # Create a mapping of question IDs to their indices
     id_to_idx = {row['id']: idx for idx, row in df.iterrows()}
@@ -517,11 +621,14 @@ def process_results_with_progress(
             idx = id_to_idx[question_id]
             
             # Check if response was truncated
-            was_truncated = result['response']['choices'][0].get('finish_reason') == 'length'
+            # Ensure result['response'] and its nested keys exist before accessing
+            was_truncated = False
+            if result.get('response') and result['response'].get('choices') and len(result['response']['choices']) > 0:
+                was_truncated = result['response']['choices'][0].get('finish_reason') == 'length'
             df.at[idx, 'was_truncated'] = was_truncated
             
             # Extract answer and update dataframe
-            model_answer = extract_answer_from_response(result['response'])
+            model_answer = extract_answer_from_response(result.get('response', {})) # Pass result['response']
             df.at[idx, 'model_answer'] = model_answer
             df.at[idx, 'is_correct'] = model_answer == df.at[idx, 'answer']
             
@@ -662,7 +769,8 @@ def generate_final_outputs_with_progress(
 ) -> Tuple[Dict[str, Any], List[str]]:
     """Generate final output files and metrics with progress bar."""
     # Create progress bar for generating outputs
-    pbar = tqdm(total=5, desc="Generating final outputs", unit="file")
+    pbar = tqdm(total=5, desc="Generating final outputs", unit="file", 
+                smoothing=0.5, miniters=1)
     
     # 1. Generate results.parquet
     results_df = df.copy()
@@ -799,7 +907,6 @@ async def main_async():
     print(f"Reasoning mode: {'Enabled' if args.reasoning else 'Disabled'}")
     print(f"Requested max tokens: {args.max_tokens}")
     print(f"Effective max tokens: {effective_max_tokens} (minimum: {min_tokens})")
-    print(f"Batch size: {args.batch_size}")
     print(f"Concurrency: {args.concurrency}")
     print("=" * 30 + "\n")
     
@@ -871,7 +978,6 @@ async def main_async():
     # Save final configuration
     config = {
         "model": args.model,
-        "batch_size": args.batch_size,
         "max_retries": args.max_retries,
         "concurrency": args.concurrency,
         "reasoning_enabled": args.reasoning,
@@ -898,7 +1004,6 @@ async def main_async():
     logging.info(f"Input file: {args.input_file}")
     logging.info(f"Model: {args.model}")
     logging.info(f"Output directory: {output_dir}")
-    logging.info(f"Batch size: {args.batch_size}")
     logging.info(f"Max retries: {args.max_retries}")
     logging.info(f"Concurrency: {args.concurrency}")
     logging.info(f"Reasoning enabled: {args.reasoning}")

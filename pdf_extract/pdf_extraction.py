@@ -11,6 +11,7 @@ import logging
 import sys
 from pathlib import Path
 from typing import List
+import concurrent.futures
 
 # Add the parent directory to sys.path to allow importing from pdf_extract
 sys.path.append(str(Path(__file__).parent.parent))
@@ -38,32 +39,20 @@ def setup_output_dir(output_dir: Path) -> Path:
 
 def process_pdfs(pdf_paths: List[Path], output_dir: Path) -> None:
     """
-    Process multiple PDF files.
+    Process multiple PDF files in parallel using ProcessPoolExecutor.
     
     Args:
         pdf_paths: List of paths to PDF files
         output_dir: Directory to save extracted images and metadata
     """
-    for pdf_path in pdf_paths:
-        try:
-            logger.info(f"Processing PDF: {pdf_path}")
-            metadata_list = process_pdf(pdf_path, output_dir)
-            logger.info(f"Successfully processed {pdf_path}")
-            logger.info(f"Extracted {len(metadata_list)} images")
-            
-            # Log summary of extracted images
-            bitmap_count = sum(1 for m in metadata_list if m.source_type == "bitmap")
-            vector_count = sum(1 for m in metadata_list if m.source_type == "vector")
-            small_count = sum(1 for m in metadata_list if "small_artifact" in m.tags)
-            
-            logger.info(f"Summary for {pdf_path.name}:")
-            logger.info(f"  - Bitmap images: {bitmap_count}")
-            logger.info(f"  - Vector graphics: {vector_count}")
-            logger.info(f"  - Small artifacts: {small_count}")
-            
-        except Exception as e:
-            logger.error(f"Error processing {pdf_path}: {str(e)}")
-            continue
+    with concurrent.futures.ProcessPoolExecutor() as executor:
+        futures = [executor.submit(process_pdf, pdf_path, output_dir) for pdf_path in pdf_paths]
+        for future in concurrent.futures.as_completed(futures):
+            try:
+                metadata_list = future.result()
+                logger.info(f"Successfully processed PDF, extracted {len(metadata_list)} images")
+            except Exception as e:
+                logger.error(f"Error processing PDF: {str(e)}")
 
 def main():
     """Main entry point for the script."""

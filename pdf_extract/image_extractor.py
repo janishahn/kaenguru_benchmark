@@ -389,64 +389,70 @@ def extract_bitmap_images(pdf_path: Path, output_dir: Path) -> List[ImageMetadat
         for page_num in range(len(doc)):
             page = doc[page_num]
             
+            # Hoist per-page directory creation out of inner loop
+            page_dir = ensure_output_dir(output_dir, pdf_name, page_num)
+            
             # Get all images on the page
             image_list = page.get_images(full=True)
+            
+            # Cache for doc.extract_image calls per page
+            image_cache = {}
             
             for img_index, img_info in enumerate(image_list):
                 try:
                     # Get the image's xref (cross-reference number)
                     xref = img_info[0]
                     
-                    # Get the base image
-                    base_image = doc.extract_image(xref)
+                    # Use cached image data if available, otherwise extract
+                    if xref not in image_cache:
+                        base_image = doc.extract_image(xref)
+                        if base_image:
+                            image_cache[xref] = (base_image["image"], get_image_extension(base_image))
+                        else:
+                            image_cache[xref] = (None, None)
                     
-                    if base_image:
-                        # Get image data and extension
-                        image_bytes = base_image["image"]
-                        ext = get_image_extension(base_image)
-                        
-                        # Get image rectangle (bounding box)
-                        bbox = page.get_image_bbox(img_info)
-                        
-                        # Calculate image size
-                        width = bbox[2] - bbox[0]
-                        height = bbox[3] - bbox[1]
-                        
-                        # Skip very small images directly
-                        if width * height < MIN_IMAGE_AREA:
-                            logger.debug(f"Skipping small image {img_index} on page {page_num} (size: {width}x{height})")
-                            continue
-                        
-                        # Skip very large images (likely backgrounds or decorative elements)
-                        if width > 500 or height > 500:
-                            logger.debug(f"Skipping large image {img_index} on page {page_num} (size: {width}x{height})")
-                            continue
-                        
-                        # Create output directory for this page
-                        page_dir = ensure_output_dir(output_dir, pdf_name, page_num)
-                        
-                        # Create output file path
-                        image_id = f"img_{img_index}"
-                        output_path = page_dir / f"{image_id}.{ext}"
-                        
-                        # Save the raw image bytes
-                        with open(output_path, "wb") as f:
-                            f.write(image_bytes)
-                        
-                        # Create metadata
-                        metadata = ImageMetadata.from_image_data(
-                            source_pdf_path=pdf_path,
-                            page_number=page_num,
-                            bbox=bbox,
-                            source_type="bitmap",
-                            original_ext=ext,
-                            extracted_file_path=output_path,
-                            image_data=image_bytes
-                        )
-                        
-                        metadata_list.append(metadata)
-                        logger.debug(f"Extracted image {image_id} from page {page_num}")
-                        
+                    image_bytes, ext = image_cache[xref]
+                    if not image_bytes:
+                        continue
+                    
+                    # Get image rectangle (bounding box)
+                    bbox = page.get_image_bbox(img_info)
+                    
+                    # Calculate image size
+                    width = bbox[2] - bbox[0]
+                    height = bbox[3] - bbox[1]
+                    
+                    # Skip very small images directly
+                    if width * height < MIN_IMAGE_AREA:
+                        logger.debug(f"Skipping small image {img_index} on page {page_num} (size: {width}x{height})")
+                        continue
+                    
+                    # Skip very large images (likely backgrounds or decorative elements)
+                    if width > 500 or height > 500:
+                        logger.debug(f"Skipping large image {img_index} on page {page_num} (size: {width}x{height})")
+                        continue
+                    
+                    # Create output file path
+                    image_id = f"img_{img_index}"
+                    output_path = page_dir / f"{image_id}.{ext}"
+                    
+                    # Save the raw image bytes
+                    output_path.write_bytes(image_bytes)
+                    
+                    # Create metadata
+                    metadata = ImageMetadata.from_image_data(
+                        source_pdf_path=pdf_path,
+                        page_number=page_num,
+                        bbox=bbox,
+                        source_type="bitmap",
+                        original_ext=ext,
+                        extracted_file_path=output_path,
+                        image_data=image_bytes
+                    )
+                    
+                    metadata_list.append(metadata)
+                    logger.debug(f"Extracted image {image_id} from page {page_num}")
+                    
                 except Exception as e:
                     logger.error(f"Error extracting image {img_index} from page {page_num}: {str(e)}")
                     continue
@@ -584,7 +590,7 @@ def consolidate_graphics(graphics_list: List[Tuple[List[Dict], fitz.Rect]]) -> L
         
     return final_consolidated_graphics
 
-def extract_vector_graphics(pdf_path: Path, output_dir: Path, page_num: int) -> List[ImageMetadata]:
+def extract_vector_graphics(pdf_path: Path, output_dir: Path, page_num: int, doc=None) -> List[ImageMetadata]:
     """
     Extract vector graphics from a specific page of a PDF file by rasterizing their bounding boxes.
     
@@ -592,6 +598,7 @@ def extract_vector_graphics(pdf_path: Path, output_dir: Path, page_num: int) -> 
         pdf_path: Path to the PDF file
         output_dir: Directory to save extracted images
         page_num: Page number to extract from (0-based)
+        doc: Optional PyMuPDF document object. If provided, the function will not open/close the PDF.
         
     Returns:
         List of ImageMetadata objects for extracted vector graphics
@@ -600,10 +607,17 @@ def extract_vector_graphics(pdf_path: Path, output_dir: Path, page_num: int) -> 
     
     metadata_list = []
     pdf_name = pdf_path.stem
+    should_close_doc = False
     
     try:
-        doc = fitz.open(pdf_path)
+        if doc is None:
+            doc = fitz.open(pdf_path)
+            should_close_doc = True
+        
         page = doc[page_num]
+        
+        # Hoist per-page directory creation out of inner loop
+        page_dir = ensure_output_dir(output_dir, pdf_name, page_num)
         
         # Get all drawings from the page
         drawings = page.get_drawings()
@@ -696,18 +710,16 @@ def extract_vector_graphics(pdf_path: Path, output_dir: Path, page_num: int) -> 
                 )
                 
                 # Prepare output
-                page_dir = ensure_output_dir(output_dir, pdf_name, page_num)
                 image_id = f"vector_{i}"
                 output_path = page_dir / f"{image_id}.png"
                 
                 # Rasterize the padded bounding box area
                 pix = page.get_pixmap(clip=padded_bbox, dpi=300)
-                pix.save(str(output_path))
+                # Get PNG bytes directly in memory
+                image_bytes = pix.tobytes("png")
+                # Write bytes to file
+                output_path.write_bytes(image_bytes)
                 
-                # Read the image data for metadata
-                with open(output_path, "rb") as f:
-                    image_bytes = f.read()
-                    
                 # Create metadata with padded bbox
                 metadata = ImageMetadata.from_image_data(
                     source_pdf_path=pdf_path,
@@ -730,7 +742,7 @@ def extract_vector_graphics(pdf_path: Path, output_dir: Path, page_num: int) -> 
         logger.error(f"Error processing PDF {pdf_path} for vector graphics: {str(e)}")
         raise
     finally:
-        if 'doc' in locals():
+        if should_close_doc and 'doc' in locals():
             doc.close()
             
     logger.info(f"Extracted {len(metadata_list)} vector graphics from page {page_num}")
@@ -821,16 +833,16 @@ def process_pdf(pdf_path: Path, output_dir: Path) -> List[ImageMetadata]:
     all_metadata = []
     
     try:
+        # Open PDF to get page count and reuse for vector extraction
+        doc = fitz.open(pdf_path)
+        
         # Extract bitmap images
         bitmap_metadata = extract_bitmap_images(pdf_path, output_dir)
         all_metadata.extend(bitmap_metadata)
         
-        # Open PDF to get page count
-        doc = fitz.open(pdf_path)
-        
-        # Extract vector graphics from each page
+        # Extract vector graphics from each page using the same doc
         for page_num in range(len(doc)):
-            vector_metadata = extract_vector_graphics(pdf_path, output_dir, page_num)
+            vector_metadata = extract_vector_graphics(pdf_path, output_dir, page_num, doc=doc)
             all_metadata.extend(vector_metadata)
             
         # Check for edge cases and filter out small/empty images

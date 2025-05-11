@@ -347,7 +347,7 @@ async def process_all_prompts(
     """Process all prompts asynchronously with controlled concurrency (no batching)."""
     all_results = []
     pbar = tqdm(total=len(prompts), desc="Processing questions", unit="q", 
-                smoothing=0.8, miniters=1, mininterval=0.5)
+                smoothing=0.98, miniters=1, mininterval=0.1)
     semaphore = asyncio.Semaphore(concurrency)
     
     # Configure longer timeouts for LLM API requests (5 minutes)

@@ -6,12 +6,12 @@ import pandas as pd
 import logging
 import os
 from tqdm import tqdm
+from utils.logger_setup import setup_logging_from_config
 
 # --- Configuration ---
 OUTPUT_BASE_DIR_NAME = "dataset"
 SOLUTIONS_FILENAME = "kaenguru_loesungen_alle_ocr_result.md"
 IMAGE_DIR_RELATIVE_TO_MD_PARENT = "ocr_images" # Assumes ocr_images is sibling to the dir containing MD files
-LOG_FILENAME = (Path(__file__).parent / "md_to_mmmu.log").resolve()
 
 # Grade level normalization constants
 GRADE_LEVEL_MIN_OVERALL = 3
@@ -641,14 +641,6 @@ def main():
     print(f"Finished processing {len(md_files)} exam files.")
 
 if __name__ == "__main__":
-    # Set up logging
-    for handler in logging.root.handlers[:]:
-        logging.root.removeHandler(handler)
-
-    log_handler = logging.FileHandler(str(LOG_FILENAME), mode='w', encoding='utf-8')
-    log_handler.setLevel(logging.DEBUG)
-    formatter = logging.Formatter('%(asctime)s %(levelname)s: %(message)s')
-    log_handler.setFormatter(formatter)
-    logging.getLogger().addHandler(log_handler)
-    logging.getLogger().setLevel(logging.DEBUG)
+    config_path = Path(__file__).parent.parent / "config.yaml"
+    setup_logging_from_config(config_path)
     main()

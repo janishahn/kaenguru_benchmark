@@ -6,6 +6,7 @@ import json
 import os
 import logging
 import re
+from utils.logger_setup import setup_logging_from_config
 from pathlib import Path
 from typing import List, Dict
 
@@ -45,48 +46,6 @@ MARKDOWN_OUTPUT_DIR_NAME = "ocr_markdown"
 LOG_DIR_NAME = "logs"
 
 # --- Helper Functions ---
-
-def setup_logging(main_output_dir: Path, verbose: bool = False) -> None:
-    """
-    Setup logging configuration.
-
-    Parameters
-    ----------
-    main_output_dir : Path
-        The base directory where logs will be stored
-    verbose : bool
-        If True, set console output to DEBUG level
-    """
-    log_dir = main_output_dir / LOG_DIR_NAME
-    log_dir.mkdir(parents=True, exist_ok=True)
-
-    log_file = log_dir / "ocr_processing.log"
-
-    # Configure logging with both file and console handlers
-    console_handler = logging.StreamHandler()
-    # Set console level based on verbose flag
-    console_handler.setLevel(logging.DEBUG if verbose else logging.WARNING)
-    file_handler = logging.FileHandler(log_file)
-    file_handler.setLevel(logging.DEBUG)  # File always gets debug level
-
-    formatter = logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s")
-    console_handler.setFormatter(formatter)
-    file_handler.setFormatter(formatter)
-
-    # Get the root logger
-    root_logger = logging.getLogger()
-    # Set root logger level to DEBUG so file handler gets everything
-    root_logger.setLevel(logging.DEBUG)
-    # Remove any default handlers
-    if root_logger.hasHandlers():
-        root_logger.handlers.clear()
-    # Add our configured handlers
-    root_logger.addHandler(console_handler)
-    root_logger.addHandler(file_handler)
-
-    # Suppress httpx info logs unless verbose
-    httpx_logger = logging.getLogger("httpx")
-    httpx_logger.setLevel(logging.DEBUG if verbose else logging.WARNING)
 
 def setup_output_directories(main_output_dir: Path) -> Dict[str, Path]:
     """
@@ -392,6 +351,9 @@ def main():
     if not MISTRAL_AVAILABLE:
         print("Error: The 'mistralai' library is required. Please install it using 'pip install mistralai'")
         exit(1)
+    # Initialize shared logging based on config.yaml
+    config_path = Path(__file__).parent.parent / "config.yaml"
+    setup_logging_from_config(config_path)
 
     parser = argparse.ArgumentParser(
         description="Perform OCR on PDF files using the Mistral AI API."
@@ -408,13 +370,14 @@ def main():
     )
     args = parser.parse_args()
 
+    # Project directories
     script_dir = Path(__file__).parent.resolve()
     project_root_dir = script_dir.parent
     main_output_dir = project_root_dir / OUTPUT_BASE_DIR_NAME
-    
+    #    
     # Setup logging
-    setup_logging(main_output_dir, args.verbose)
-    
+    # setup_logging(main_output_dir, args.verbose)
+
     if args.verbose:
         logging.info(f"Project Root Directory: {project_root_dir}")
         logging.info(f"Output will be saved under: {main_output_dir}")
@@ -483,4 +446,6 @@ def main():
 
 
 if __name__ == "__main__":
+    config_path = Path(__file__).parent.parent / "config.yaml"
+    setup_logging_from_config(config_path)
     main()

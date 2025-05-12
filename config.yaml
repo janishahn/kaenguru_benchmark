@@ -1,0 +1,31 @@
+# General Paths
+raw_pdf_input_dir: "originals/raw_pdfs/"
+processing_output_base_dir: "preprocessing_output/"
+
+graphics_extraction:
+  output_dir_name: "graph_ex_output/"
+  stripped_pdf_subdir: "stripped_pdfs/"
+  graphics_json_filename: "graphics_metadata.json"
+  graphics_assets_subdir: "extracted_graphics/"
+  enable_hybrid_residual_processing: true
+  raster_dpi: 300
+  vector_primitive_text_overlap_threshold: 0.5
+  primitive_clustering_adjacency_gap_pt: 5.0
+  min_vector_cluster_area_pt2: 100.0
+  residual_stage_min_objects_cutoff: 3
+  residual_blob_text_overlap_threshold: 0.5
+  residual_clustering_adjacency_gap_pt: 5.0
+
+ocr_processing:
+  output_dir_name: "ocr_output/"
+  json_output_subdir: "ocr_json/"
+  image_output_subdir: "ocr_images/"
+  markdown_output_subdir: "ocr_markdown/"
+  log_subdir: "logs/"
+
+logging:
+  pipeline_log_filename: "preprocessing.log"
+  level: "INFO"
+
+dataset_generation:
+  output_dir_name: "dataset/"

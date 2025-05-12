@@ -341,3 +341,81 @@ The `metrics.json` file contains comprehensive statistics:
   }
 }
 ```
+
+---
+
+## Graphics Extraction Preprocessing
+
+This project includes a graphics extraction preprocessing step that deterministically extracts graphics (bitmaps, vectors, and residuals) from input PDFs before OCR. The extracted graphics are cataloged in a JSON file and can be re-integrated into the final Markdown output.
+
+### How It Works
+
+1. **Extraction**: The script `pdf_preprocessing/pdf_graphics_extractor.py` processes each PDF, extracting:
+   - **Bitmaps** (embedded images)
+   - **Vector graphics** (shapes, lines, etc.)
+   - **Residual graphics** (detected via raster sweep and image processing)
+2. **Cataloging**: All extracted graphics are saved to disk and their metadata is written to a JSON catalog.
+3. **Stripped PDF**: A version of the PDF with all graphics removed/redacted is produced for OCR (Stage 4).
+
+### Configuration
+
+Graphics extraction is controlled via the `graphics_extraction` section in `config.yaml`. Key options include:
+- `enable_hybrid_residual_processing`: Enable/disable residual raster sweep.
+- `raster_dpi`: DPI for rasterization in residual detection.
+- `graphics_json_filename`: Output filename for the graphics metadata catalog.
+- `graphics_assets_subdir`: Directory for extracted graphics assets.
+- `stripped_pdf_subdir`: Directory for graphics-stripped PDFs (output of Stage 4).
+
+### JSON Catalog Schema (`graphics_metadata.json`)
+
+The catalog is a JSON file with the following structure:
+
+```json
+{
+  "graphics": [
+    {
+      "id": "page1_img12",
+      "page_num": 1,
+      "bbox": [x0, y0, x1, y1],
+      "type": "bitmap|vector|residual",
+      "path": "relative/path/to/asset.png|svg",
+      // ...other fields (e.g., source_xref for bitmaps)
+    },
+    // ...more objects
+  ],
+  "metadata": {
+    "raster_dpi": 300,
+    "vector_primitive_text_overlap_threshold": 0.5,
+    "primitive_clustering_adjacency_gap_pt": 5.0,
+    "min_vector_cluster_area_pt2": 100.0,
+    "residual_stage_min_objects_cutoff": 3,
+    "residual_blob_text_overlap_threshold": 0.5,
+    "residual_clustering_adjacency_gap_pt": 5.0,
+    "page_dimensions": {
+      "1": [595.0, 842.0],
+      "2": [595.0, 842.0]
+      // ...
+    }
+  }
+}
+```
+
+- Each object in `graphics` includes its type, page, bounding box, and asset path.
+- The `metadata` section records extraction parameters and page sizes.
+
+### Example CLI Usage
+
+```bash
+python pdf_preprocessing/pdf_graphics_extractor.py path/to/input.pdf config.yaml
+```
+
+- Extracted graphics are saved in the configured assets directory.
+- The catalog is written to the configured output directory as `graphics_metadata.json`.
+- The stripped PDF is saved for downstream OCR processing in the directory specified by `stripped_pdf_subdir`.
+
+### Output Directory Structure
+
+After running the extractor, you will find:
+- `processing_output/<graphics_pipeline_output>/extracted_graphics/`: All extracted graphics assets (PNG, SVG)
+- `processing_output/<graphics_pipeline_output>/graphics_metadata.json`: Catalog of all extracted graphics
+- `processing_output/<graphics_pipeline_output>/stripped_pdfs/`: Graphics-stripped PDFs for OCR

@@ -4,3 +4,7 @@ pyarrow==20.0.0
 python-dotenv==1.1.0
 tqdm==4.67.1
 aiohttp==3.11.18
+PyMuPDF==1.25.5
+opencv-python==4.11.0.86
+numpy==2.2.5
+PyYAML==6.0.2

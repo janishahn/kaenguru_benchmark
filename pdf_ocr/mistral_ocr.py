@@ -3,12 +3,17 @@
 import argparse
 import base64
 import json
+import shutil
 import os
 import logging
 import re
+import subprocess
+import sys
+import yaml # Added import
 from utils.logger_setup import setup_logging_from_config
 from pathlib import Path
-from typing import List, Dict
+from typing import List, Dict, Any
+from pdf_preprocessing.pdf_graphics_extractor import main as graphics_extractor_main
 
 try:
     from tqdm import tqdm
@@ -73,6 +78,117 @@ def setup_output_directories(main_output_dir: Path) -> Dict[str, Path]:
 def format_image_filename(base_filename: str, page_idx: int, img_idx: int, ext: str) -> str:
     """Format image filename consistently across the script."""
     return f"{base_filename}_page_{page_idx+1}_img_{img_idx+1}.{ext}"
+
+def parse_json_to_markdown_with_graphics(
+    ocr_response: OCRResponse,
+    graphics_metadata: Dict[str, Any],
+    markdown_file_path: Path, # Absolute path to the .md file being written
+    ocr_images_abs_dir: Path, # Absolute path to .../ocr_output/ocr_images/
+) -> str:
+    """
+    Parses Mistral OCRResponse and integrates pre-extracted graphics into Markdown.
+
+    Parameters
+    ----------
+    ocr_response : OCRResponse
+        The OCRResponse object from the Mistral API (for the stripped PDF).
+    graphics_metadata : Dict[str, Any]
+        Loaded graphics metadata from the preprocessing step.
+    markdown_file_path : Path
+        Absolute path where the final Markdown file will be saved.
+        Used to calculate relative paths for images.
+    ocr_images_abs_dir : Path
+        Absolute path to the directory where final images (graphics) will be stored.
+
+    Returns
+    -------
+    str
+        A single string containing the document text formatted in Markdown,
+        with graphics integrated.
+    """
+    full_markdown_output_parts = []
+    all_graphics_from_metadata = graphics_metadata.get('graphics', [])
+
+    for page_idx, page_content_from_ocr in enumerate(ocr_response.pages):
+        current_page_num_for_graphics = page_idx + 1  # Metadata uses 1-based page numbers
+        page_specific_elements = []
+
+        graphics_for_current_page = sorted(
+            [g for g in all_graphics_from_metadata if g.get('page_num') == current_page_num_for_graphics],
+            key=lambda g: g.get('bbox', [0, float('inf'), 0, 0])[1]  # Sort by y0
+        )
+
+        words_on_current_page = []
+        if hasattr(page_content_from_ocr, 'words') and page_content_from_ocr.words:
+            words_on_current_page = sorted(
+                page_content_from_ocr.words,
+                key=lambda w: (w.bbox[1], w.bbox[0])  # Sort by y0, then x0
+            )
+
+        if not words_on_current_page and hasattr(page_content_from_ocr, 'markdown') and page_content_from_ocr.markdown:
+            # Case: Page has markdown from OCR but no detailed words (e.g., fully graphical page in stripped PDF)
+            page_specific_elements.append(page_content_from_ocr.markdown)
+            for graphic_to_insert in graphics_for_current_page:
+                graphic_id = graphic_to_insert['id']
+                graphic_filename = Path(graphic_to_insert['path']).name
+                try:
+                    # Calculate path relative from the MD file to the image in ocr_images_abs_dir
+                    relative_image_path_for_md = Path(os.path.relpath(
+                        ocr_images_abs_dir / graphic_filename,
+                        start=markdown_file_path.parent
+                    ))
+                except ValueError: # Fallback for different drives on Windows, etc.
+                    relative_image_path_for_md = Path(f"../{ocr_images_abs_dir.name}/{graphic_filename}")
+                markdown_image_tag = f"\\n\\n![{graphic_id}]({relative_image_path_for_md.as_posix()})\\n\\n"
+                page_specific_elements.append(markdown_image_tag)
+        else:
+            # Merge words and graphics by their y-coordinate
+            word_iterator_idx = 0
+            graphic_iterator_idx = 0
+            current_text_line_buffer = []
+
+            while word_iterator_idx < len(words_on_current_page) or graphic_iterator_idx < len(graphics_for_current_page):
+                word_y_pos = words_on_current_page[word_iterator_idx].bbox[1] if word_iterator_idx < len(words_on_current_page) else float('inf')
+                graphic_y_pos = graphics_for_current_page[graphic_iterator_idx]['bbox'][1] if graphic_iterator_idx < len(graphics_for_current_page) else float('inf')
+
+                if word_y_pos == float('inf') and graphic_y_pos == float('inf'): # Both exhausted
+                    break
+
+                if word_y_pos <= graphic_y_pos and word_iterator_idx < len(words_on_current_page) : # Prioritize words if y is same or less
+                    current_text_line_buffer.append(words_on_current_page[word_iterator_idx].text)
+                    word_iterator_idx += 1
+                elif graphic_iterator_idx < len(graphics_for_current_page):
+                    if current_text_line_buffer:
+                        page_specific_elements.append(" ".join(current_text_line_buffer))
+                        current_text_line_buffer = []
+                    
+                    graphic_to_insert = graphics_for_current_page[graphic_iterator_idx]
+                    graphic_id = graphic_to_insert['id']
+                    graphic_filename = Path(graphic_to_insert['path']).name
+                    try:
+                        relative_image_path_for_md = Path(os.path.relpath(
+                            ocr_images_abs_dir / graphic_filename,
+                            start=markdown_file_path.parent
+                        ))
+                    except ValueError:
+                        relative_image_path_for_md = Path(f"../{ocr_images_abs_dir.name}/{graphic_filename}")
+                    
+                    markdown_image_tag = f"\\n\\n![{graphic_id}]({relative_image_path_for_md.as_posix()})\\n\\n"
+                    page_specific_elements.append(markdown_image_tag)
+                    graphic_iterator_idx += 1
+                else: # Should only be if words are left but word_y_pos > graphic_y_pos (which is inf)
+                    # This case should be covered by the first condition if words are left.
+                    # If only words are left, graphic_y_pos is inf, so word_y_pos <= graphic_y_pos is true.
+                    break # Safety break
+
+            if current_text_line_buffer: # Append any remaining text
+                page_specific_elements.append(" ".join(current_text_line_buffer))
+
+        full_markdown_output_parts.append(" ".join(page_specific_elements))
+        if page_idx < len(ocr_response.pages) - 1: # Add page separator
+            full_markdown_output_parts.append("\\n\\n---\\n\\n")
+
+    return "".join(full_markdown_output_parts).strip()
 
 def parse_json_to_markdown(response: OCRResponse, image_paths: Dict[int, Dict[int, str]]) -> str:
     """
@@ -242,30 +358,58 @@ def save_images(response: OCRResponse, output_dir: Path, base_filename: str) -> 
         
     return image_paths
 
-def process_pdf(pdf_path: Path, client: Mistral, output_dirs: Dict[str, Path], is_batch: bool = False) -> bool:
+def process_pdf(
+    pdf_path: Path, 
+    client: Mistral, 
+    output_dirs: Dict[str, Path], 
+    graphics_metadata_json_path: Path, 
+    config: Dict[str, Any], 
+    project_root: Path, 
+    is_batch: bool = False
+) -> bool:
     """
     Processes a single PDF file using the Mistral OCR API.
 
     Parameters
     ----------
     pdf_path : Path
-        Path object for the input PDF file.
+        Path object for the input PDF file (should be the stripped PDF).
     client : Mistral
         Initialized Mistral client.
     output_dirs : dict of str to Path
         Dictionary containing Paths for json, images, and markdown output.
+    graphics_metadata_json_path : Path
+        Path to the graphics_metadata.json file from preprocessing for this specific PDF.
+    config : Dict[str, Any]
+        The loaded project configuration.
+    project_root : Path
+        The root directory of the project.
     is_batch : bool
-        If True, this is part of a batch and detailed logs should go to file only
+        If True, this is part of a batch and detailed logs should go to file only.
 
     Returns
     -------
     bool
-        True if processing was successful, False otherwise
+        True if processing was successful, False otherwise.
     """
-    base_filename = pdf_path.stem
-    json_output_path = output_dirs["json"] / f"{base_filename}_ocr_result.json"
-    markdown_output_path = output_dirs["markdown"] / f"{base_filename}_ocr_result.md"
+    base_filename_stripped = pdf_path.stem  # e.g., "original_filename_stripped"
+    original_base_filename = base_filename_stripped.replace('_stripped', '')
+
+    json_output_path = output_dirs["json"] / f"{original_base_filename}_ocr_result.json"
+    markdown_output_path = output_dirs["markdown"] / f"{original_base_filename}_ocr_result.md"
     success = True
+
+    graphics_data = None
+    if graphics_metadata_json_path and graphics_metadata_json_path.is_file():
+        try:
+            with open(graphics_metadata_json_path, 'r', encoding='utf-8') as f:
+                graphics_data = json.load(f)
+            logging.info(f"Successfully loaded graphics metadata from {graphics_metadata_json_path} for {original_base_filename}")
+        except Exception as e:
+            logging.warning(f"Failed to load graphics metadata from {graphics_metadata_json_path} for {original_base_filename}: {e}. Proceeding without graphics integration.")
+            graphics_data = None # Ensure it's None if loading fails
+    else:
+        logging.info(f"No graphics metadata file provided or found at {graphics_metadata_json_path} for {original_base_filename}. Proceeding without graphics integration.")
 
     try:
         with open(pdf_path, "rb") as pdf_file:
@@ -311,20 +455,65 @@ def process_pdf(pdf_path: Path, client: Mistral, output_dirs: Dict[str, Path], i
 
         # Extract and save images first to get image paths
         try:
-            image_paths = save_images(response, output_dirs["images"], base_filename)
-        except Exception as e:
-            logging.error(f"Error extracting images: {e}")
-            image_paths = {}
-            success = False
+            if graphics_data:
+                logging.info(f"Using preprocessed graphics for {original_base_filename}. Custom markdown generation and asset copying will be performed.")
+                
+                # Generate markdown with integrated graphics
+                markdown_content = parse_json_to_markdown_with_graphics(
+                    response,
+                    graphics_data,
+                    markdown_output_path,       # For calculating relative paths
+                    output_dirs["images"]       # Absolute path to target ocr_images dir
+                )
+                with open(markdown_output_path, "w", encoding="utf-8") as f_md:
+                    f_md.write(markdown_content)
+                logging.info(f"Markdown with integrated graphics saved to {markdown_output_path}")
 
-        # Extract markdown with updated image paths
-        try:
-            markdown_content = parse_json_to_markdown(response, image_paths)
-            with open(markdown_output_path, "w", encoding="utf-8") as f_md:
-                f_md.write(markdown_content)
-            logging.debug(f"Saved Markdown output")
+                # Copy graphics assets
+                # Determine base directory for all processing outputs from config
+                processing_output_base_dir_cfg = config["processing_output_base_dir"]
+                if Path(processing_output_base_dir_cfg).is_absolute():
+                    processing_base_abs_dir = Path(processing_output_base_dir_cfg)
+                else:
+                    processing_base_abs_dir = project_root / processing_output_base_dir_cfg
+                
+                destination_images_dir = output_dirs["images"] # e.g. .../ocr_output/ocr_images/
+                destination_images_dir.mkdir(parents=True, exist_ok=True) # Ensure it exists
+
+                copied_count = 0
+                if 'graphics' in graphics_data:
+                    for graphic_item in graphics_data['graphics']:
+                        original_graphic_path_str = graphic_item.get('path') # Path relative to processing_base_abs_dir
+                        if not original_graphic_path_str:
+                            logging.warning(f"Graphic item {graphic_item.get('id')} missing 'path' in metadata for {original_base_filename}.")
+                            continue
+                        
+                        source_file_abs = (processing_base_abs_dir / original_graphic_path_str).resolve()
+                        graphic_filename = Path(original_graphic_path_str).name
+                        destination_file_abs = destination_images_dir / graphic_filename
+                        
+                        if source_file_abs.is_file():
+                            try:
+                                shutil.copy2(source_file_abs, destination_file_abs)
+                                copied_count += 1
+                            except Exception as e_copy:
+                                logging.warning(f"Failed to copy graphic {source_file_abs} to {destination_file_abs} for {original_base_filename}: {e_copy}")
+                        else:
+                            logging.warning(f"Source graphic file not found: {source_file_abs} for {original_base_filename}")
+                    logging.info(f"Copied {copied_count} graphic assets to {destination_images_dir} for {original_base_filename}")
+                else:
+                    logging.warning(f"No 'graphics' key found in graphics_data for {original_base_filename}. Cannot copy assets.")
+
+            else: # Fallback to old method if no graphics_data (Mistral handles images)
+                logging.info(f"No preprocessed graphics data for {original_base_filename}. Using default Mistral image handling and markdown parsing.")
+                image_paths = save_images(response, output_dirs["images"], original_base_filename) # Saves Mistral's images
+                markdown_content = parse_json_to_markdown(response, image_paths) # Original function
+                with open(markdown_output_path, "w", encoding="utf-8") as f_md:
+                    f_md.write(markdown_content)
+                logging.info(f"Markdown (default Mistral handling) saved to {markdown_output_path}")
+                
         except Exception as e:
-            logging.error(f"Error generating or saving Markdown: {e}")
+            logging.error(f"Error extracting images or generating markdown: {e}")
             success = False
 
     except Exception as e:
@@ -340,7 +529,7 @@ def process_pdf(pdf_path: Path, client: Mistral, output_dirs: Dict[str, Path], i
     return success
 
 
-def main():
+def main() -> None:
     """
     Main function to parse arguments and orchestrate the OCR process.
 
@@ -348,104 +537,98 @@ def main():
     -------
     None
     """
-    if not MISTRAL_AVAILABLE:
-        print("Error: The 'mistralai' library is required. Please install it using 'pip install mistralai'")
-        exit(1)
-    # Initialize shared logging based on config.yaml
-    config_path = Path(__file__).parent.parent / "config.yaml"
-    setup_logging_from_config(config_path)
-
-    parser = argparse.ArgumentParser(
-        description="Perform OCR on PDF files using the Mistral AI API."
-    )
-    parser.add_argument(
-        "input_path",
-        type=str,
-        help="Relative path to a single PDF file or a directory containing PDF files.",
-    )
-    parser.add_argument(
-        "-v", "--verbose",
-        action="store_true",
-        help="Enable verbose output to console (always enabled for logs)"
-    )
+    parser = argparse.ArgumentParser(description="OCR pipeline with graphics extraction preprocessing.")
+    parser.add_argument("pdfs", nargs='+', help="Input PDF file(s) to process.")
+    parser.add_argument("--config", required=True, help="Path to config.yaml.")
     args = parser.parse_args()
 
-    # Project directories
-    script_dir = Path(__file__).parent.resolve()
-    project_root_dir = script_dir.parent
-    main_output_dir = project_root_dir / OUTPUT_BASE_DIR_NAME
-    #    
+    config_path = Path(args.config).resolve()
+    if not config_path.is_file():
+        print(f"Error: Config file not found at {config_path}")
+        return
+
     # Setup logging
-    # setup_logging(main_output_dir, args.verbose)
+    setup_logging_from_config(config_path) # Uses absolute path
 
-    if args.verbose:
-        logging.info(f"Project Root Directory: {project_root_dir}")
-        logging.info(f"Output will be saved under: {main_output_dir}")
+    # Load config
+    with open(config_path, 'r') as f:
+        config = yaml.safe_load(f) # Uses yaml import
+    project_root = config_path.parent # Assuming config.yaml is at project root
 
-    input_path_arg = Path(args.input_path)
-    input_path = input_path_arg.resolve()
-
-    if not input_path.exists():
-        logging.error(f"Input path '{args.input_path}' (resolved to '{input_path}') does not exist.")
-        exit(1)
-
-    pdf_files_to_process: List[Path] = []
-    if input_path.is_file():
-        if input_path.suffix.lower() == ".pdf":
-            pdf_files_to_process.append(input_path)
-        else:
-            logging.error(f"Input file '{args.input_path}' is not a PDF file.")
-            exit(1)
-    elif input_path.is_dir():
-        if args.verbose:
-            logging.info(f"Scanning directory '{input_path}' for PDF files...")
-        pdf_files_to_process = sorted(list(input_path.glob("*.pdf")))
-        if not pdf_files_to_process:
-            logging.info(f"No PDF files found in directory '{input_path}'.")
-            exit(0)
-        if args.verbose:
-            logging.info(f"Found {len(pdf_files_to_process)} PDF file(s).")
+    # Determine base directory for all processing outputs
+    processing_output_base_dir_cfg = config["processing_output_base_dir"]
+    if Path(processing_output_base_dir_cfg).is_absolute():
+        processing_base_dir = Path(processing_output_base_dir_cfg)
     else:
-        logging.error(f"Input path '{args.input_path}' is neither a file nor a directory.")
-        exit(1)
-
-    output_dirs = setup_output_directories(main_output_dir)
-    if args.verbose:
-        logging.info("Output directories ensured.")
-
-    try:
-        client = Mistral(api_key=MISTRAL_API_KEY)
-        if args.verbose:
-            logging.info("Mistral client initialized.")
-    except Exception as e:
-        logging.error(f"Error initializing Mistral client: {e}")
-        exit(1)
-
-    # Determine if we're batch processing or single file
-    is_batch = len(pdf_files_to_process) > 1
+        processing_base_dir = project_root / processing_output_base_dir_cfg
     
-    # Process files
-    if is_batch and TQDM_AVAILABLE:
-        # Use tqdm for progress tracking with multiple files
-        successes = 0
-        total = len(pdf_files_to_process)
-        with tqdm(total=total, desc="Processing PDFs", unit="file") as pbar:
-            for pdf_path in pdf_files_to_process:
-                if process_pdf(pdf_path, client, output_dirs, is_batch=True):
-                    successes += 1
-                pbar.update(1)
-        
-        print(f"Successfully processed {successes}/{total} files")
-    else:
-        # Process files without tqdm
-        for pdf_path in pdf_files_to_process:
-            print(f"\nProcessing '{pdf_path.name}'...")
-            process_pdf(pdf_path, client, output_dirs, is_batch=is_batch)
+    # Graphics extraction specific paths (needed for locating inputs for OCR)
+    graphics_extraction_cfg = config["graphics_extraction"]
+    graphics_output_dir_name = graphics_extraction_cfg["output_dir_name"]
+    graphics_output_abs_dir = processing_base_dir / graphics_output_dir_name # e.g., .../processing_output/graphics_pipeline_output/
+    
+    stripped_pdf_subdir_name = graphics_extraction_cfg["stripped_pdf_subdir"]
+    # e.g., .../processing_output/graphics_pipeline_output/stripped_pdfs/
+    stripped_pdf_abs_subdir = graphics_output_abs_dir / stripped_pdf_subdir_name 
+    
+    graphics_json_filename_from_config = graphics_extraction_cfg["graphics_json_filename"] # e.g., "graphics_metadata.json"
 
+    # Setup output dirs for OCR, relative to processing_base_dir
+    ocr_processing_cfg = config.get("ocr_processing", {})
+    ocr_output_dir_name_from_config = ocr_processing_cfg.get("output_dir_name", OUTPUT_BASE_DIR_NAME) # Fallback to const
+    main_ocr_output_abs_dir = processing_base_dir / ocr_output_dir_name_from_config # e.g., .../processing_output/ocr_output/
+    
+    output_dirs = setup_output_directories(main_ocr_output_abs_dir) # Use absolute path for OCR outputs
+
+    # Setup Mistral client
+    if not MISTRAL_AVAILABLE:
+        print("Mistral API not available. Exiting.")
+        return
+    client = Mistral(api_key=MISTRAL_API_KEY)
+
+    for pdf_path_str in args.pdfs:
+        pdf_path = Path(pdf_path_str).resolve()
+        if not pdf_path.is_file():
+            logging.error(f"Input PDF not found: {pdf_path}")
+            continue
+            
+        # --- Phase 3: Step 9 ---
+        # 1. Run graphics extraction (preprocessing)
+        # This assumes pdf_graphics_extractor.main processes one PDF and creates outputs
+        # named after the PDF's stem within the configured directories.
+        try:
+            logging.info(f"Starting graphics extraction for: {pdf_path}")
+            # graphics_extractor_main(str(pdf_path), str(config_path)) # Call with strings if it expects that
+            # Assuming graphics_extractor_main is imported and takes Path objects:
+            graphics_extractor_main(pdf_path, config_path)
+            logging.info(f"Graphics extraction completed for: {pdf_path}")
+        except Exception as e:
+            logging.error(f"Graphics extraction failed for {pdf_path}: {e}")
+            continue
+        # 2. Determine path to the stripped PDF (output from graphics_extractor_main)
+        stripped_pdf_path = stripped_pdf_abs_subdir / f"{pdf_path.stem}_stripped.pdf"
+        if not stripped_pdf_path.is_file():
+            logging.error(f"Stripped PDF not found after extraction: {stripped_pdf_path}")
+            continue
+        # 3. Determine path to the graphics_metadata.json for this PDF
+        # Assuming it's named <pdf_stem>_<graphics_json_filename_from_config> in graphics_output_abs_dir
+        current_graphics_metadata_json_path = graphics_output_abs_dir / f"{pdf_path.stem}_{graphics_json_filename_from_config}"
+        
+        # 4. Run OCR on stripped PDF
+        logging.info(f"Processing OCR for stripped PDF: {stripped_pdf_path} using graphics metadata {current_graphics_metadata_json_path}")
+        process_pdf(
+            stripped_pdf_path, 
+            client, 
+            output_dirs, 
+            current_graphics_metadata_json_path,
+            config,             
+            project_root,       
+            is_batch=(len(args.pdfs) > 1)
+        )
+    logging.info("All PDFs processed.")
     print("OCR processing complete.")
 
 
 if __name__ == "__main__":
-    config_path = Path(__file__).parent.parent / "config.yaml"
-    setup_logging_from_config(config_path)
+    # The main() function now handles argument parsing and logging setup directly.
     main()

@@ -24,17 +24,18 @@ pip install -r requirements.txt
 
 ## PDF OCR Pipeline
 
-The project includes a PDF OCR pipeline for extracting text and images from Math Kangaroo competition PDFs using the Mistral AI OCR API. This pipeline automates the conversion of scanned or digital PDFs into structured Markdown, JSON, and image files for further processing and benchmarking.
+The pipeline includes a graphics extraction preprocessing step before OCR. For each input PDF, the script first extracts all graphics (bitmaps, vectors, and residuals) using `pdf_preprocessing/pdf_graphics_extractor.py`, producing a graphics-stripped PDF and a `graphics_metadata.json` catalog. The OCR is then performed on the stripped PDF, and the graphics metadata is available for later re-integration into the Markdown output.
 
 ### How It Works
 
 1. **Input**: Accepts a single PDF file or a directory containing multiple PDF files.
-2. **OCR Processing**: Each PDF is uploaded to the Mistral API, which performs OCR and returns structured results, including detected text and embedded images.
-3. **Output Generation**:
+2. **Graphics Extraction**: For each PDF, all graphics are extracted and saved, and a version of the PDF with all graphics removed is produced.
+3. **OCR Processing**: The stripped PDF is uploaded to the Mistral API, which performs OCR and returns structured results, including detected text and embedded images.
+4. **Output Generation**:
     - **JSON**: The raw OCR response is saved as a JSON file.
     - **Images**: All images detected in the PDF are extracted and saved as separate files.
     - **Markdown**: The OCR text (with image references) is formatted into a Markdown file, with image links pointing to the extracted images.
-4. **Batch Support**: The pipeline can process multiple PDFs in a directory sequentially.
+5. **Batch Support**: The pipeline can process multiple PDFs in a directory sequentially.
 
 ### Output Structure
 
@@ -43,6 +44,8 @@ All outputs are saved in an `output/` directory at the project root, with the fo
 - `ocr_images/`: Extracted images from PDFs.
 - `ocr_markdown/`: Markdown files with text and image references.
 - `logs/`: Log files for each run.
+- `graphics_metadata/`: Catalogs of extracted graphics for each PDF.
+- `stripped_pdfs/`: Graphics-stripped PDFs used for OCR.
 
 ### Setup
 
@@ -61,14 +64,18 @@ All outputs are saved in an `output/` directory at the project root, with the fo
 #### Process a Single PDF
 
 ```bash
-python pdf_ocr/mistral_ocr.py path/to/your_file.pdf
+python pdf_ocr/mistral_ocr.py path/to/your_file.pdf --config config.yaml
 ```
 
 #### Process All PDFs in a Directory
 
 ```bash
-python pdf_ocr/mistral_ocr.py path/to/pdf_directory/
+python pdf_ocr/mistral_ocr.py path/to/pdf_directory/*.pdf --config config.yaml
 ```
+
+- The `--config` argument is now required and should point to your `config.yaml`.
+- The script will automatically run the graphics extraction step before OCR for each PDF.
+- The OCR will use the graphics-stripped PDF as input, and the path to the `graphics_metadata.json` is tracked for each file.
 
 #### Enable Verbose Logging
 
@@ -79,10 +86,12 @@ python pdf_ocr/mistral_ocr.py path/to/your_file.pdf --verbose
 #### Example Output
 
 After running the script, you will find:
-- `output/ocr_json/your_file_ocr_result.json`
-- `output/ocr_markdown/your_file_ocr_result.md`
-- Extracted images in `output/ocr_images/`
-- Logs in `output/logs/`
+- `ocr_output/ocr_json/your_file_ocr_result.json`
+- `ocr_output/ocr_markdown/your_file_ocr_result.md`
+- Extracted images in `ocr_output/ocr_images/`
+- Logs in `ocr_output/logs/`
+- Graphics metadata in the directory specified by your config (see `graphics_metadata.json`)
+- Graphics-stripped PDFs in the configured output directory
 
 ---
 

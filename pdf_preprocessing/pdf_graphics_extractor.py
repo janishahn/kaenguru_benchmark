@@ -230,7 +230,7 @@ def extract_bitmap_xobjects(page: fitz.Page, page_num: int,
             
             # For simplicity, use the first bbox. If an image is used multiple times,
             # this might need more sophisticated handling.
-            img_bbox = img_bboxes_on_page[0].irect.totuple() # Use topleft of first instance
+            img_bbox = tuple(img_bboxes_on_page[0].irect)  # Use topleft of first instance
 
             image_id = f"page{page_num + 1}_img{xref}"
             image_filename = f"{image_id}.png"
@@ -283,45 +283,84 @@ def harvest_vector_primitives(page: fitz.Page, page_num: int, config: Dict[str, 
         List of vector primitive metadata dictionaries.
     """
     logger.info(f"Page {page_num + 1}: Harvesting vector primitives.")
-    drawings = page.get_drawings() # Returns a list of fitz.Path objects
-    
+    drawings = page.get_drawings()  # Returns a list of dicts, not fitz.Path objects
+
     text_overlap_threshold = config["graphics_extraction"]["vector_primitive_text_overlap_threshold"]
-    
+
     # Get text bboxes on the page
     text_bboxes_coords = []
-    text_blocks = page.get_text("dict", flags=fitz.TEXTFLAGS_DICT & ~fitz.TEXT_PRESERVE_LIGATURES & ~fitz.TEXT_PRESERVE_WHITESPACE)["blocks"]
-    for block in text_blocks:
-        if block["type"] == 0: # Text block
-            text_bboxes_coords.append(block["bbox"])
+    # text_blocks = page.get_text("dict")["blocks"] # Original line
+    text_data = page.get_text("dict") # More robust access
+    page_text_blocks = text_data.get("blocks", [])
+
+    for block in page_text_blocks:
+        if 'bbox' in block: # Ensure bbox exists
+            bbox_coords = block['bbox']
+            # Ensure bbox is valid (x0, y0, x1, y1) with x0 <= x1 and y0 <= y1
+            if isinstance(bbox_coords, (list, tuple)) and len(bbox_coords) == 4 and \
+               bbox_coords[0] <= bbox_coords[2] and bbox_coords[1] <= bbox_coords[3]:
+                text_bboxes_coords.append(bbox_coords)
+            else:
+                logger.warning(f"Page {page_num + 1}: Skipping invalid text block bbox {bbox_coords}")
 
     harvested_primitives = []
-    primitive_idx = 0
-    for path_obj in drawings:
-        primitive_bbox_coords = path_obj.rect.irect.totuple() # Bounding box of the path
+    # primitive_idx = 0 # Original line, not used in the appended dict
 
-        # Filter by text overlap
-        is_overlapping_text = False
-        if text_bboxes_coords: # Only check if there's text
-            for text_bbox_coords in text_bboxes_coords:
-                iou = calculate_iou(primitive_bbox_coords, text_bbox_coords)
-                if iou > text_overlap_threshold:
-                    is_overlapping_text = True
-                    break
-        
-        if not is_overlapping_text:
-            primitive_id = f"page{page_num + 1}_prim{primitive_idx}"
-            metadata = {
-                "id": primitive_id,
-                "page_num": page_num + 1,
-                "bbox": primitive_bbox_coords,
-                "type": "vector_primitive", # Intermediate type
-                "path_obj": path_obj # Store the fitz.Path object for clustering and SVG generation
-            }
-            harvested_primitives.append(metadata)
-            primitive_idx += 1
-            logger.debug(f"Page {page_num + 1}: Harvested primitive {primitive_id}, bbox {primitive_bbox_coords}")
+    for drawing in drawings:
+        if 'rect' not in drawing: # Robustness: check if 'rect' key exists
+            logger.warning(f"Page {page_num + 1}: Drawing item missing 'rect' key. Skipping: {drawing.get('type')}")
+            continue
             
-    logger.info(f"Page {page_num + 1}: Harvested {len(harvested_primitives)} non-text-overlapping vector primitives.")
+        drawing_bbox_coords = drawing['rect']
+        # Validate drawing_bbox_coords format and values
+        if not (isinstance(drawing_bbox_coords, (list, tuple)) and len(drawing_bbox_coords) == 4 and \
+                all(isinstance(c, (int, float)) for c in drawing_bbox_coords) and \
+                drawing_bbox_coords[0] <= drawing_bbox_coords[2] and \
+                drawing_bbox_coords[1] <= drawing_bbox_coords[3]):
+            logger.warning(f"Page {page_num + 1}: Skipping invalid or malformed drawing bbox {drawing_bbox_coords}")
+            continue
+
+        try:
+            primitive_rect = fitz.Rect(drawing_bbox_coords)
+        except ValueError as e:
+            logger.warning(f"Page {page_num + 1}: Could not create fitz.Rect from drawing bbox {drawing_bbox_coords}. Error: {e}. Skipping.")
+            continue
+            
+        primitive_area = primitive_rect.width * primitive_rect.height
+
+        # Skip zero-area or tiny primitives immediately
+        if primitive_area <= 1e-6: # Using a small epsilon for float comparison
+            continue
+
+        is_overlapping_with_text = False
+        for text_bbox_item_coords in text_bboxes_coords: # text_bbox_item_coords is already validated
+            try:
+                text_rect = fitz.Rect(text_bbox_item_coords)
+            except ValueError as e:
+                logger.warning(f"Page {page_num + 1}: Could not create fitz.Rect from text bbox {text_bbox_item_coords}. Error: {e}. Skipping this text_bbox for overlap check.")
+                continue
+
+            intersection_rect = primitive_rect & text_rect # Intersection
+            
+            if not intersection_rect.is_empty:
+                intersection_area = intersection_rect.width * intersection_rect.height
+                if intersection_area > 1e-6: # Consider only meaningful intersections
+                    # Calculate fraction of primitive's area covered by text
+                    overlap_fraction_of_primitive = intersection_area / primitive_area
+                    
+                    if overlap_fraction_of_primitive > text_overlap_threshold:
+                        is_overlapping_with_text = True
+                        break # This primitive is considered text, no need to check other text boxes
+        
+        if not is_overlapping_with_text:
+            harvested_primitives.append({
+                'type': 'vector_primitive',
+                'page_num': page_num,
+                'bbox': drawing_bbox_coords, # Original coordinate list/tuple
+                'drawing': deepcopy(drawing) # The drawing dictionary itself
+            })
+
+    logger.info(f"Page {page_num + 1}: Harvested {len(harvested_primitives)} non-text-overlapping vector primitives (using area fraction).")
     return harvested_primitives
 
 
@@ -333,7 +372,7 @@ def cluster_vector_primitives(primitives: List[Dict[str, Any]], page_num: int, c
     Parameters
     ----------
     primitives : List[Dict[str, Any]]
-        List of harvested vector primitive metadata (must include 'bbox' and 'path_obj').
+        List of harvested vector primitive metadata (must include 'bbox' and 'drawing').
     page_num : int
         The page number (0-based).
     config : Dict[str, Any]
@@ -350,7 +389,7 @@ def cluster_vector_primitives(primitives: List[Dict[str, Any]], page_num: int, c
         return []
 
     logger.info(f"Page {page_num + 1}: Clustering {len(primitives)} vector primitives.")
-    
+
     adjacency_gap_pt = config["graphics_extraction"]["primitive_clustering_adjacency_gap_pt"]
     min_cluster_area_pt2 = config["graphics_extraction"]["min_vector_cluster_area_pt2"]
 
@@ -363,11 +402,9 @@ def cluster_vector_primitives(primitives: List[Dict[str, Any]], page_num: int, c
         for j in range(i + 1, len(primitives)):
             bbox1 = primitives[i]["bbox"]
             bbox2 = primitives[j]["bbox"]
-            # Connect if distance is small or if they overlap (distance would be 0)
             if bbox_distance(bbox1, bbox2) <= adjacency_gap_pt:
                 ds.union(i, j)
 
-    # Group primitives by cluster
     clusters_map: Dict[int, List[int]] = {}
     for i in range(len(primitives)):
         root = ds.find(i)
@@ -380,74 +417,46 @@ def cluster_vector_primitives(primitives: List[Dict[str, Any]], page_num: int, c
     for root_primitive_idx, primitive_indices in clusters_map.items():
         if not primitive_indices:
             continue
-
         cluster_primitives = [primitives[i] for i in primitive_indices]
-        
-        # Compute union bbox for the cluster
         union_bbox_rect = fitz.Rect()
         for prim_data in cluster_primitives:
             union_bbox_rect.include_rect(fitz.Rect(prim_data["bbox"]))
-        
         if union_bbox_rect.is_empty:
             continue
-
-        cluster_bbox_coords = union_bbox_rect.irect.totuple()
+        cluster_bbox_coords = tuple(union_bbox_rect.irect)
         cluster_area = union_bbox_rect.width * union_bbox_rect.height
-
         if cluster_area < min_cluster_area_pt2:
             logger.debug(f"Page {page_num + 1}: Discarding small vector cluster (area {cluster_area:.2f} < {min_cluster_area_pt2}).")
             continue
-
         # Generate SVG for the cluster
         svg_parts = []
         for prim_data in cluster_primitives:
-            path_obj: fitz.Path = prim_data["path_obj"]
-            d_str = path_obj.svg_pathstring()
-            
-            stroke_color = "none"
-            if path_obj.color: # stroke color
-                stroke_color = f"rgb({int(path_obj.color[0]*255)},{int(path_obj.color[1]*255)},{int(path_obj.color[2]*255)})"
-            
-            fill_color = "none"
-            if path_obj.fill: # fill color
-                fill_color = f"rgb({int(path_obj.fill[0]*255)},{int(path_obj.fill[1]*255)},{int(path_obj.fill[2]*255)})"
-            
-            stroke_width = path_obj.width if path_obj.width is not None else 1.0 # PyMuPDF uses 'width' for stroke-width
-            
-            # Basic style, can be enhanced
-            style = f'stroke:{stroke_color};fill:{fill_color};stroke-width:{stroke_width}pt;'
-            if not path_obj.stroking: # if path is not stroked, set stroke to none
-                 style = f'stroke:none;fill:{fill_color};'
-            if not path_obj.filling: # if path is not filled, set fill to none
-                 style = f'stroke:{stroke_color};fill:none;stroke-width:{stroke_width}pt;'
-            if not path_obj.stroking and not path_obj.filling: # if neither, it might be a clipping path or empty
-                 style = 'display:none;'
-
-
-            svg_parts.append(f'<path d="{d_str}" style="{style}"/>')
-        
+            drawing = prim_data["drawing"]  # This is a dict from get_drawings()
+            for item in drawing.get("items", []):
+                if item[0] == "path":
+                    d_str = item[1]
+                    stroke_color = drawing.get("color", "none")
+                    fill_color = drawing.get("fill", "none")
+                    stroke_width = drawing.get("width", 1.0)
+                    style = f'stroke:{stroke_color};fill:{fill_color};stroke-width:{stroke_width}pt;'
+                    svg_parts.append(f'<path d="{d_str}" style="{style}"/>' )
         svg_content = (f'<svg xmlns="http://www.w3.org/2000/svg" '
-                       f'viewBox="{union_bbox_rect.x0} {union_bbox_rect.y0} {union_bbox_rect.width} {union_bbox_rect.height}">'
+                       f'viewBox="{union_bbox_rect.x0} {union_bbox_rect.y0} {union_bbox_rect.width} {union_bbox_rect.height}">' 
                        f'{"".join(svg_parts)}</svg>')
-
         cluster_id = f"page{page_num + 1}_vec{cluster_svg_idx}"
         svg_filename = f"{cluster_id}.svg"
         svg_path = graphics_assets_output_dir / svg_filename
-
         with open(svg_path, "w", encoding="utf-8") as svg_file:
             svg_file.write(svg_content)
-        
         metadata = {
             "id": cluster_id,
             "page_num": page_num + 1,
             "bbox": cluster_bbox_coords,
             "type": "vector",
-            "path": str(svg_path.relative_to(graphics_assets_output_dir.parent.parent)) # Relative to processing_output_base_dir
+            "path": str(svg_path.relative_to(graphics_assets_output_dir.parent.parent))
         }
         clustered_vectors_metadata.append(metadata)
-        logger.debug(f"Page {page_num + 1}: Saved vector cluster {cluster_id} (area {cluster_area:.2f}), bbox {cluster_bbox_coords}")
         cluster_svg_idx += 1
-        
     logger.info(f"Page {page_num + 1}: Formed {len(clustered_vectors_metadata)} vector graphic clusters.")
     return clustered_vectors_metadata
 
@@ -549,6 +558,7 @@ def extract_graphics_from_pdf(pdf_path: Path, config_path: Path, project_root: P
         return None
 
     all_graphics_metadata: List[Dict[str, Any]] = []
+    page_dimensions: Dict[int, Tuple[float, float]] = {}
 
     try:
         doc = fitz.open(pdf_path)
@@ -559,12 +569,22 @@ def extract_graphics_from_pdf(pdf_path: Path, config_path: Path, project_root: P
     for i, page in enumerate(doc):
         page_metadata = process_page_graphics(page, i, config, graphics_assets_output_dir)
         all_graphics_metadata.extend(page_metadata)
-    
+        # Record page dimensions (width, height in points)
+        page_dimensions[i + 1] = (page.rect.width, page.rect.height)
     doc.close()
     logger.info(f"Finished graphics extraction for PDF: {pdf_path.name}. Found {len(all_graphics_metadata)} graphics total.")
-    
-    # For now, just returning the metadata. Later stages will use this.
-    # Stage 3 (JSON catalog) and Stage 4 (Stripped PDF) will be implemented later.
+
+    # Write graphics_metadata.json (Stage 3)
+    graphics_json_path = graphics_pipeline_output_dir / graphics_extraction_config["graphics_json_filename"]
+    raster_dpi = graphics_extraction_config.get("raster_dpi", 300)
+    assemble_graphics_json_catalog(
+        all_graphics_records=all_graphics_metadata,
+        output_json_path=graphics_json_path,
+        page_dimensions=page_dimensions,
+        config=config,
+        raster_dpi=raster_dpi
+    )
+
     return {"graphics_metadata": all_graphics_metadata, "config": config}
 
 
@@ -853,45 +873,36 @@ def produce_graphics_stripped_pdf(
     logger.info(f"Saved graphics-stripped PDF to {output_pdf_path}")
 
 
-def main() -> None:
+def main(input_pdf_path: Path, config_path: Path) -> None:
     """
-    Command-line interface for the PDF graphics extractor.
+    Main entry point for programmatic use: extract graphics and produce stripped PDF for a given PDF and config.
+
+    Parameters
+    ----------
+    input_pdf_path : Path
+        Path to the input PDF file.
+    config_path : Path
+        Path to the project's config.yaml file.
+    Returns
+    -------
+    None
     """
-    import argparse
-    parser = argparse.ArgumentParser(description="Extracts graphics from PDF files based on a configuration.")
-    parser.add_argument("input_pdf", type=str, help="Path to the input PDF file.")
-    parser.add_argument("config_file", type=str, help="Path to the project's config.yaml file.")
-    args = parser.parse_args()
-
-    input_pdf_path = Path(args.input_pdf).resolve()
-    config_path = Path(args.config_file).resolve()
-
     if not input_pdf_path.is_file():
         print(f"Error: Input PDF not found at {input_pdf_path}")
         return
     if not config_path.is_file():
         print(f"Error: Config file not found at {config_path}")
         return
-
-    # Determine project root (assuming config.yaml is at the project root)
     project_root = config_path.parent
-
-    # Setup logging first using the absolute config path
     try:
         setup_logging_from_config(config_path)
     except Exception as e:
         print(f"Failed to setup logging: {e}")
-        import logging
         logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
         logger.error(f"Logging setup failed: {e}. Using basic console logging.")
-
     logger.info(f"Project root identified as: {project_root}")
     extraction_results = extract_graphics_from_pdf(input_pdf_path, config_path, project_root)
-
     if extraction_results:
-        # Stage 3: Write JSON catalog (already implemented)
-        # Stage 4: Produce graphics-stripped PDF
-        import yaml
         with open(config_path, 'r') as f:
             config = yaml.safe_load(f)
         graphics_extraction_cfg = config["graphics_extraction"]
@@ -911,5 +922,17 @@ def main() -> None:
     else:
         logger.error("Graphics extraction process failed.")
 
+def main_cli() -> None:
+    """
+    Command-line interface for the PDF graphics extractor.
+    """
+    parser = argparse.ArgumentParser(description="Extracts graphics from PDF files based on a configuration.")
+    parser.add_argument("input_pdf", type=str, help="Path to the input PDF file.")
+    parser.add_argument("config_file", type=str, help="Path to the project's config.yaml file.")
+    args = parser.parse_args()
+    input_pdf_path = Path(args.input_pdf).resolve()
+    config_path = Path(args.config_file).resolve()
+    main(input_pdf_path, config_path)
+
 if __name__ == "__main__":
-    main()
+    main_cli()

@@ -15,7 +15,7 @@
     {
       "id": "openai/gpt-oss-120b",
       "label": "OpenAI GPT OSS 120B",
-      "supports_vision": true,
+      "supports_vision": false,
       "supports_json_response_format": true
     },
     {

@@ -1,0 +1,18 @@
+[project]
+name = "kaenguru-benchmark"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "pandas>=2.2",
+    "pyarrow>=16.0",
+    "requests>=2.32",
+    "pillow>=10.3",
+    "tqdm>=4.66",
+    "pytest>=8.3",
+]
+
+[tool.pytest.ini_options]
+addopts = "-q"
+testpaths = ["tests"]

@@ -1,4 +1,5 @@
 import argparse
+import asyncio
 import base64
 import dataclasses
 import json
@@ -12,8 +13,8 @@ from datetime import datetime
 from io import BytesIO
 from typing import Any, Dict, List, Optional, Tuple
 
+import httpx
 import pandas as pd
-import requests
 from PIL import Image
 from tqdm import tqdm
 
@@ -47,12 +48,18 @@ LETTER_SET = {"A", "B", "C", "D", "E"}
 DEFAULT_RETRY_MAX_TOKENS = 256
 
 
+def default_worker_count() -> int:
+    cpu = os.cpu_count() or 4
+    return max(2, min(8, cpu))
+
+
 @dataclass
 class ModelInfo:
     id: str
     label: Optional[str] = None
     supports_vision: bool = False
     supports_json_response_format: bool = False
+    min_request_interval: Optional[float] = None
 
 
 @dataclass
@@ -81,16 +88,71 @@ class RowRecord:
     warnings: Optional[List[str]] = None
 
 
+@dataclass
+class WorkerOutcome:
+    record: Optional[RowRecord]
+    raw_entries: List[Dict[str, Any]]
+    failure_entry: Optional[Dict[str, Any]]
+    skipped: bool
+    fail_fast_trigger: bool
+
+
+class AdaptiveRateLimiter:
+    def __init__(self, initial_interval: float = 0.0) -> None:
+        self._min_interval = max(0.0, initial_interval)
+        self._last_timestamp = 0.0
+        self._lock = asyncio.Lock()
+
+    async def acquire(self) -> None:
+        while True:
+            async with self._lock:
+                now = asyncio.get_running_loop().time()
+                target = self._last_timestamp + self._min_interval
+                if now >= target:
+                    self._last_timestamp = now
+                    return
+                wait_time = target - now
+            await asyncio.sleep(wait_time)
+
+    async def record_throttle(self) -> None:
+        async with self._lock:
+            if self._min_interval == 0.0:
+                self._min_interval = 0.5
+            else:
+                self._min_interval = min(self._min_interval * 2.0, 30.0)
+
+    async def record_success(self) -> None:
+        async with self._lock:
+            if self._min_interval == 0.0:
+                return
+            self._min_interval = max(self._min_interval * 0.8, 0.0)
+
 def read_models_registry(path: str) -> Dict[str, ModelInfo]:
     with open(path, "r", encoding="utf-8") as f:
         data = json.load(f)
     models = {}
     for m in data.get("models", []):
+        min_interval: Optional[float] = None
+        rate_limit = m.get("rate_limit")
+        if isinstance(rate_limit, dict):
+            raw_min = rate_limit.get("min_interval_seconds")
+            if isinstance(raw_min, (int, float)) and raw_min >= 0:
+                min_interval = float(raw_min)
+            raw_rps = rate_limit.get("requests_per_second")
+            if min_interval is None and isinstance(raw_rps, (int, float)) and raw_rps > 0:
+                min_interval = 1.0 / float(raw_rps)
+            raw_rpm = rate_limit.get("requests_per_minute")
+            if min_interval is None and isinstance(raw_rpm, (int, float)) and raw_rpm > 0:
+                min_interval = 60.0 / float(raw_rpm)
+        elif isinstance(rate_limit, (int, float)) and rate_limit > 0:
+            min_interval = 1.0 / float(rate_limit)
+
         info = ModelInfo(
             id=m.get("id"),
             label=m.get("label"),
             supports_vision=bool(m.get("supports_vision", False)),
             supports_json_response_format=bool(m.get("supports_json_response_format", False)),
+            min_request_interval=min_interval,
         )
         models[info.id] = info
     return models
@@ -441,27 +503,449 @@ def parse_answer_from_text(text: str, reasoning: str) -> Tuple[Optional[str], Op
     return None, None, "no_parse"
 
 
-def request_with_retries(url: str, headers: Dict[str, str], payload: Dict[str, Any]) -> Tuple[requests.Response, float]:
+async def request_with_retries(
+    client: httpx.AsyncClient,
+    limiter: AdaptiveRateLimiter,
+    url: str,
+    headers: Dict[str, str],
+    payload: Dict[str, Any],
+) -> Tuple[httpx.Response, float]:
     delays = [0.5, 1.0, 2.0]
     last_exc: Optional[Exception] = None
     start = time.perf_counter()
     for attempt in range(len(delays) + 1):
+        await limiter.acquire()
         try:
-            resp = requests.post(url, headers=headers, json=payload, timeout=120)
-            if resp.status_code in (429, 500, 502, 503, 504):
-                if attempt < len(delays):
-                    time.sleep(delays[attempt])
-                    continue
-            latency_ms = (time.perf_counter() - start) * 1000.0
-            return resp, latency_ms
-        except Exception as e:
-            last_exc = e
+            resp = await client.post(url, headers=headers, json=payload)
+        except Exception as exc:
+            last_exc = exc
             if attempt < len(delays):
-                time.sleep(delays[attempt])
+                await asyncio.sleep(delays[attempt])
                 continue
             raise
-    # Should not reach here
+
+        if resp.status_code in (429, 500, 502, 503, 504):
+            await limiter.record_throttle()
+            if attempt < len(delays):
+                await asyncio.sleep(delays[attempt])
+                continue
+        else:
+            await limiter.record_success()
+
+        latency_ms = (time.perf_counter() - start) * 1000.0
+        return resp, latency_ms
+
     raise last_exc if last_exc else RuntimeError("request failed")
+
+
+def build_failure_record(
+    row: Dict[str, Any],
+    args: argparse.Namespace,
+    latencies: List[float],
+    warnings: List[str],
+    error_msg: str,
+    raw_text_response: Optional[str],
+) -> RowRecord:
+    answer_value = row.get("answer")
+    if pd.isna(answer_value) or answer_value is None:
+        normalized_answer = ""
+    else:
+        normalized_answer = str(answer_value)
+    gt = normalized_answer.strip().upper()
+    if not gt or gt not in LETTER_SET:
+        gt = None
+
+    return RowRecord(
+        id=row.get("id"),
+        year=row.get("year"),
+        group=row.get("group"),
+        problem_number=row.get("problem_number"),
+        language=row.get("language"),
+        multimodal=row.get("multimodal"),
+        points=row.get("points"),
+        answer=gt,
+        predicted=None,
+        is_correct=None,
+        points_earned=0.0,
+        reasoning_mode=args.reasoning,
+        latency_ms=sum(latencies) if latencies else None,
+        prompt_tokens=None,
+        completion_tokens=None,
+        total_tokens=None,
+        cost_usd=None,
+        rationale=None,
+        raw_text_response=raw_text_response,
+        generation_id=None,
+        error=error_msg,
+        warnings=warnings or None,
+    )
+
+
+async def evaluate_single_row(
+    row: Dict[str, Any],
+    args: argparse.Namespace,
+    model_info: ModelInfo,
+    client: httpx.AsyncClient,
+    limiter: AdaptiveRateLimiter,
+    url: str,
+    headers: Dict[str, str],
+) -> WorkerOutcome:
+    warnings: List[str] = []
+    raw_entries: List[Dict[str, Any]] = []
+
+    q_bytes = coerce_bytes(row.get("question_image"))
+    opt_bytes = {letter: coerce_bytes(row.get(f"sol_{letter}_image_bin")) for letter in LETTER_SET}
+    assoc_bytes = coerce_list_of_bytes(row.get("associated_images_bin")) or []
+
+    has_images = bool(q_bytes or any(opt_bytes.values()) or assoc_bytes)
+    if has_images and not model_info.supports_vision:
+        return WorkerOutcome(record=None, raw_entries=[], failure_entry=None, skipped=True, fail_fast_trigger=False)
+
+    encoded_images: Dict[str, Any] = {"assoc_list": []}
+    if model_info.supports_vision:
+        if q_bytes:
+            img = pil_from_bytes(q_bytes)
+            if img is None:
+                warnings.append("question_image_decode_failed")
+            else:
+                url_data, _ = image_to_data_url(img)
+                encoded_images["question"] = url_data
+
+        for letter in ["A", "B", "C", "D", "E"]:
+            b = opt_bytes.get(letter)
+            if b:
+                img = pil_from_bytes(b)
+                if img is None:
+                    warnings.append(f"opt_{letter}_image_decode_failed")
+                else:
+                    url_data, _ = image_to_data_url(img)
+                    encoded_images[f"opt_{letter}"] = url_data
+
+        for idx, b in enumerate(assoc_bytes):
+            img = pil_from_bytes(b)
+            if img is None:
+                warnings.append(f"assoc_{idx+1}_image_decode_failed")
+                encoded_images["assoc_list"].append(None)
+            else:
+                url_data, _ = image_to_data_url(img)
+                encoded_images["assoc_list"].append(url_data)
+
+    messages = build_messages(row, args.reasoning, model_info, encoded_images)
+
+    payload: Dict[str, Any] = {
+        "model": model_info.id,
+        "messages": messages,
+        "temperature": args.temperature,
+        "top_p": args.top_p,
+        "usage": {"include": True},
+    }
+    if model_info.supports_json_response_format:
+        payload["response_format"] = build_response_format(args.reasoning)
+
+    max_tokens_current = args.max_tokens
+    attempt = 0
+    max_attempts = 5
+    combined_usage: Dict[str, float] = {}
+    last_usage: Optional[Dict[str, Any]] = None
+    latencies: List[float] = []
+    ans: Optional[str] = None
+    rat: Optional[str] = None
+    parse_warn: Optional[str] = None
+    content_text = ""
+    gen_id = None
+    finish_reason = None
+    native_finish = None
+
+    while attempt < max_attempts:
+        attempt += 1
+        if max_tokens_current is not None:
+            payload["max_tokens"] = max_tokens_current
+        else:
+            payload.pop("max_tokens", None)
+
+        try:
+            resp, latency_ms = await request_with_retries(client, limiter, url, headers, payload)
+            latencies.append(latency_ms)
+        except Exception as exc:
+            err_msg = f"request_failed: {exc}"
+            failure_entry = {"id": row.get("id"), "error": err_msg}
+            record = build_failure_record(row, args, latencies, warnings, err_msg, None)
+            return WorkerOutcome(
+                record=record,
+                raw_entries=raw_entries,
+                failure_entry=failure_entry,
+                skipped=False,
+                fail_fast_trigger=args.fail_fast,
+            )
+
+        if resp.status_code != 200:
+            content_text = resp.text or ""
+            snippet = re.sub(r"\s+", " ", content_text.strip()) if content_text else ""
+            if snippet:
+                snippet = snippet[:200]
+            err_msg = f"http_error_{resp.status_code}"
+            if snippet:
+                err_msg = f"{err_msg}: {snippet}"
+            warnings.append(f"http_status_{resp.status_code}")
+            try:
+                error_payload = resp.json()
+            except Exception:
+                error_payload = {"raw_text": content_text}
+            raw_entries.append(
+                {
+                    "id": row.get("id"),
+                    "attempt": attempt,
+                    "response": error_payload,
+                    "status_code": resp.status_code,
+                }
+            )
+            failure_entry = {
+                "id": row.get("id"),
+                "status_code": resp.status_code,
+                "error": err_msg,
+            }
+            record = build_failure_record(row, args, latencies, warnings, err_msg, content_text or None)
+            return WorkerOutcome(
+                record=record,
+                raw_entries=raw_entries,
+                failure_entry=failure_entry,
+                skipped=False,
+                fail_fast_trigger=args.fail_fast,
+            )
+
+        try:
+            data = resp.json()
+        except Exception:
+            data = None
+
+        content_text = resp.text or ""
+        finish_reason = None
+        native_finish = None
+
+        if isinstance(data, dict):
+            gen_id = data.get("id")
+            choices = data.get("choices") or []
+            if choices and isinstance(choices, list):
+                choice0 = choices[0] or {}
+                finish_reason = choice0.get("finish_reason")
+                native_finish = choice0.get("native_finish_reason")
+                content_raw = ((choice0.get("message") or {}).get("content"))
+                content_text = normalize_message_content(content_raw)
+            usage = data.get("usage")
+            if isinstance(usage, dict):
+                last_usage = usage
+                for key in ("prompt_tokens", "completion_tokens", "total_tokens"):
+                    val = usage.get(key)
+                    if isinstance(val, (int, float)):
+                        combined_usage[key] = combined_usage.get(key, 0.0) + float(val)
+                cost_val = usage.get("cost") or usage.get("total_cost")
+                if isinstance(cost_val, str):
+                    try:
+                        cost_val = float(cost_val)
+                    except Exception:
+                        cost_val = None
+                if isinstance(cost_val, (int, float)):
+                    combined_usage["cost"] = combined_usage.get("cost", 0.0) + float(cost_val)
+            raw_entries.append(
+                {
+                    "id": row.get("id"),
+                    "attempt": attempt,
+                    "response": data,
+                }
+            )
+        else:
+            raw_entries.append(
+                {
+                    "id": row.get("id"),
+                    "attempt": attempt,
+                    "response": {"raw_text": content_text},
+                }
+            )
+
+        ans, rat, parse_warn = parse_answer_from_text(content_text or "", args.reasoning)
+
+        should_retry = False
+        finish_values = [finish_reason, native_finish]
+        if ans is None and attempt < max_attempts:
+            for reason in finish_values:
+                if isinstance(reason, str) and reason.lower() in {"length", "max_tokens", "max_tokens_exceeded"}:
+                    should_retry = True
+                    break
+
+        if should_retry:
+            if max_tokens_current is None:
+                next_tokens = DEFAULT_RETRY_MAX_TOKENS
+            else:
+                next_tokens = min(max_tokens_current * 2, 4096)
+            warnings.append(
+                f"max_tokens_retry_{max_tokens_current if max_tokens_current is not None else 'auto'}->{next_tokens}"
+            )
+            max_tokens_current = next_tokens
+            continue
+
+        if parse_warn:
+            warnings.append(parse_warn)
+
+        break
+
+    answer_value = row.get("answer")
+    if pd.isna(answer_value) or answer_value is None:
+        normalized_answer = ""
+    else:
+        normalized_answer = str(answer_value)
+
+    gt = normalized_answer.strip().upper()
+    if not gt or gt not in LETTER_SET:
+        gt = None
+
+    is_correct = (ans == gt) if (ans is not None and gt is not None) else None
+
+    points_earned = 0.0
+    if is_correct:
+        raw_points = row.get("points")
+        if pd.isna(raw_points) or raw_points is None or raw_points == "":
+            points_earned = 0.0
+        else:
+            try:
+                points_earned = float(raw_points)
+            except (TypeError, ValueError):
+                points_earned = 0.0
+
+    prompt_tokens = completion_tokens = total_tokens = None
+    cost_usd = None
+    if combined_usage:
+        if "prompt_tokens" in combined_usage:
+            prompt_tokens = int(combined_usage["prompt_tokens"])
+        if "completion_tokens" in combined_usage:
+            completion_tokens = int(combined_usage["completion_tokens"])
+        if "total_tokens" in combined_usage:
+            total_tokens = int(combined_usage["total_tokens"])
+        if "cost" in combined_usage:
+            cost_usd = float(combined_usage["cost"])
+    elif isinstance(last_usage, dict):
+        prompt_tokens = last_usage.get("prompt_tokens")
+        completion_tokens = last_usage.get("completion_tokens")
+        total_tokens = last_usage.get("total_tokens")
+        cost_usd = last_usage.get("cost") or last_usage.get("total_cost")
+        if isinstance(cost_usd, str):
+            try:
+                cost_usd = float(cost_usd)
+            except Exception:
+                cost_usd = None
+
+    record = RowRecord(
+        id=row.get("id"),
+        year=row.get("year"),
+        group=row.get("group"),
+        problem_number=row.get("problem_number"),
+        language=row.get("language"),
+        multimodal=row.get("multimodal"),
+        points=row.get("points"),
+        answer=gt,
+        predicted=ans,
+        is_correct=is_correct,
+        points_earned=points_earned,
+        reasoning_mode=args.reasoning,
+        latency_ms=sum(latencies) if latencies else None,
+        prompt_tokens=prompt_tokens,
+        completion_tokens=completion_tokens,
+        total_tokens=total_tokens,
+        cost_usd=cost_usd,
+        rationale=rat,
+        raw_text_response=content_text,
+        generation_id=gen_id,
+        error=None,
+        warnings=warnings or None,
+    )
+
+    return WorkerOutcome(
+        record=record,
+        raw_entries=raw_entries,
+        failure_entry=None,
+        skipped=False,
+        fail_fast_trigger=False,
+    )
+
+
+async def evaluate_rows_async(
+    rows_data: List[Dict[str, Any]],
+    args: argparse.Namespace,
+    model_info: ModelInfo,
+    url: str,
+    headers: Dict[str, str],
+    results_jsonl,
+    raw_responses_file,
+    failures_file,
+    worker_count: int,
+) -> Tuple[List[RowRecord], List[Dict[str, Any]], int]:
+    rows: List[RowRecord] = []
+    results_records: List[Dict[str, Any]] = []
+    skipped = 0
+
+    limiter = AdaptiveRateLimiter(initial_interval=model_info.min_request_interval or 0.0)
+    work_queue: asyncio.Queue[Optional[Dict[str, Any]]] = asyncio.Queue()
+    result_queue: asyncio.Queue[Optional[WorkerOutcome]] = asyncio.Queue()
+    stop_event = asyncio.Event()
+
+    progress = tqdm(total=len(rows_data), desc="Evaluating", unit="q")
+
+    async def worker(client: httpx.AsyncClient) -> None:
+        while True:
+            item = await work_queue.get()
+            if item is None:
+                work_queue.task_done()
+                break
+            if args.fail_fast and stop_event.is_set():
+                work_queue.task_done()
+                continue
+            outcome = await evaluate_single_row(item, args, model_info, client, limiter, url, headers)
+            await result_queue.put(outcome)
+            work_queue.task_done()
+            if args.fail_fast and outcome.fail_fast_trigger:
+                stop_event.set()
+
+    async def consumer() -> None:
+        nonlocal skipped
+        while True:
+            outcome = await result_queue.get()
+            if outcome is None:
+                result_queue.task_done()
+                break
+            if outcome.skipped:
+                skipped += 1
+            if outcome.failure_entry is not None:
+                write_jsonl_line(failures_file, outcome.failure_entry)
+            for entry in outcome.raw_entries:
+                write_jsonl_line(raw_responses_file, entry)
+            if outcome.record is not None:
+                rows.append(outcome.record)
+                record_dict = asdict(outcome.record)
+                results_records.append(record_dict)
+                write_jsonl_line(results_jsonl, record_dict)
+            progress.update(1)
+            result_queue.task_done()
+
+    limits = httpx.Limits(max_connections=max(4, worker_count * 2), max_keepalive_connections=max(2, worker_count))
+    timeout = httpx.Timeout(120.0)
+
+    try:
+        async with httpx.AsyncClient(timeout=timeout, limits=limits) as client:
+            for item in rows_data:
+                await work_queue.put(item)
+            for _ in range(worker_count):
+                await work_queue.put(None)
+
+            workers = [asyncio.create_task(worker(client)) for _ in range(worker_count)]
+            consumer_task = asyncio.create_task(consumer())
+
+            await asyncio.gather(*workers)
+            await result_queue.put(None)
+            await consumer_task
+    finally:
+        progress.close()
+
+    return rows, results_records, skipped
+
 
 
 def main():
@@ -474,7 +958,11 @@ def main():
     parser.add_argument("--top_p", type=float, default=1.0)
     parser.add_argument("--limit", type=int, default=None)
     parser.add_argument("--seed", type=int, default=None)
-    parser.add_argument("--concurrency", type=int, default=1)
+    parser.add_argument(
+        "--sequential",
+        action="store_true",
+        help="Process rows sequentially instead of using the default concurrent worker pool.",
+    )
     parser.add_argument("--output_dir", default="runs")
     parser.add_argument("--fail_fast", action="store_true")
     args = parser.parse_args()
@@ -486,14 +974,12 @@ def main():
         print("ERROR: OPENROUTER_API_KEY environment variable is required.", file=sys.stderr)
         sys.exit(2)
 
-    # Load model info
     models = read_models_registry(os.path.join(os.path.dirname(__file__), "models.json"))
     if args.model not in models:
         print(f"ERROR: model '{args.model}' not found in models.json", file=sys.stderr)
         sys.exit(2)
     model_info = models[args.model]
 
-    # Resolve dataset and outputs
     try:
         dataset_path = resolve_dataset_path(args.dataset)
     except Exception as exc:
@@ -502,20 +988,14 @@ def main():
 
     run_dir, ts = ensure_output_dir(args.output_dir, args.model)
 
-    # Load dataset
     df = pd.read_parquet(dataset_path, engine="pyarrow")
     validate_dataset_columns(df)
 
-    # Limit rows
     if args.limit is not None and args.limit < len(df):
         if args.seed is not None:
             df = df.sample(n=args.limit, random_state=args.seed)
         else:
             df = df.head(args.limit)
-
-    rows: List[RowRecord] = []
-    results_records: List[Dict[str, Any]] = []
-    skipped = 0
 
     headers = {
         "Authorization": f"Bearer {api_key}",
@@ -524,332 +1004,59 @@ def main():
     }
     url = "https://openrouter.ai/api/v1/chat/completions"
 
-    # Iterate rows
-    iterable = df.to_dict(orient="records")
-    pbar = tqdm(iterable, desc="Evaluating", unit="q")
+    rows_data = df.to_dict(orient="records")
+
+    worker_count = 1 if args.sequential else default_worker_count()
+    if not rows_data:
+        worker_count = 1
 
     results_jsonl_path = os.path.join(run_dir, "results.jsonl")
     raw_responses_path = os.path.join(run_dir, "raw_responses.jsonl")
     failures_jsonl_path = os.path.join(run_dir, "failures.jsonl")
 
+    initial_interval = model_info.min_request_interval or 0.0
+    if initial_interval > 0:
+        initial_rpm = 60.0 / initial_interval
+        limiter_desc = f"seeded at {initial_rpm:.1f} rpm"
+    else:
+        limiter_desc = "adaptive (no seed)"
+
+    multimodal_count = sum(1 for row in rows_data if bool(row.get("multimodal")))
+    avg_points = float(df["points"].dropna().astype(float).mean()) if not df["points"].dropna().empty else None
+    year_counts = df["year"].value_counts().to_dict() if "year" in df.columns else {}
+    year_desc = ", ".join(f"{k}:{v}" for k, v in sorted(year_counts.items())) if year_counts else "n/a"
+
+    print("Configuration:")
+    print(f"  Model: {model_info.id}")
+    if model_info.label:
+        print(f"  Label: {model_info.label}")
+    print(f"  Dataset rows: {len(rows_data)}")
+    print(f"  Multimodal rows: {multimodal_count} ({multimodal_count/len(rows_data)*100:.1f}% )" if rows_data else "  Multimodal rows: 0")
+    print(f"  Mode: {'sequential' if worker_count == 1 else f'concurrent x{worker_count}'}")
+    print(f"  Rate limiter: {limiter_desc}")
+    print(f"  Reasoning: {args.reasoning}")
+    if avg_points is not None:
+        print(f"  Avg points: {avg_points:.2f}")
+    print(f"  Year distribution: {year_desc}")
+
     with open(results_jsonl_path, "w", encoding="utf-8") as results_jsonl, \
         open(raw_responses_path, "w", encoding="utf-8") as raw_responses_file, \
         open(failures_jsonl_path, "w", encoding="utf-8") as failures_file:
 
-        for row in pbar:
-            warnings: List[str] = []
-            # Collect images
-            q_bytes = coerce_bytes(row.get("question_image"))
-            opt_bytes = {letter: coerce_bytes(row.get(f"sol_{letter}_image_bin")) for letter in LETTER_SET}
-            assoc_bytes = coerce_list_of_bytes(row.get("associated_images_bin")) or []
-
-            has_images = bool(q_bytes or any(opt_bytes.values()) or assoc_bytes)
-            if has_images and not model_info.supports_vision:
-                skipped += 1
-                continue
-
-            # Encode images (vision models only)
-            encoded_images: Dict[str, Any] = {"assoc_list": []}
-            if model_info.supports_vision:
-                # Question image
-                if q_bytes:
-                    img = pil_from_bytes(q_bytes)
-                    if img is None:
-                        warnings.append("question_image_decode_failed")
-                    else:
-                        url_data, _ = image_to_data_url(img)
-                        encoded_images["question"] = url_data
-
-                # Option images
-                for letter in ["A", "B", "C", "D", "E"]:
-                    b = opt_bytes.get(letter)
-                    if b:
-                        img = pil_from_bytes(b)
-                        if img is None:
-                            warnings.append(f"opt_{letter}_image_decode_failed")
-                        else:
-                            url_data, _ = image_to_data_url(img)
-                            encoded_images[f"opt_{letter}"] = url_data
-
-                # Associated images
-                for i, b in enumerate(assoc_bytes):
-                    img = pil_from_bytes(b)
-                    if img is None:
-                        warnings.append(f"assoc_{i+1}_image_decode_failed")
-                        encoded_images["assoc_list"].append(None)
-                    else:
-                        url_data, _ = image_to_data_url(img)
-                        encoded_images["assoc_list"].append(url_data)
-
-            # Build messages
-            messages = build_messages(row, args.reasoning, model_info, encoded_images)
-
-            # Payload
-            payload: Dict[str, Any] = {
-                "model": model_info.id,
-                "messages": messages,
-                "temperature": args.temperature,
-                "top_p": args.top_p,
-                "usage": {"include": True},
-            }
-            if model_info.supports_json_response_format:
-                payload["response_format"] = build_response_format(args.reasoning)
-            max_tokens_current = args.max_tokens
-            attempt = 0
-            max_attempts = 5
-            combined_usage: Dict[str, float] = {}
-            last_usage: Optional[Dict[str, Any]] = None
-            latencies: List[float] = []
-            content_text = ""
-            gen_id = None
-            model_echo = None
-            ans = None
-            rat = None
-            parse_warn: Optional[str] = None
-            finish_reason = None
-            native_finish = None
-            request_failed = False
-
-            while attempt < max_attempts:
-                attempt += 1
-                if max_tokens_current is not None:
-                    payload["max_tokens"] = max_tokens_current
-                else:
-                    payload.pop("max_tokens", None)
-
-                try:
-                    resp, latency_ms = request_with_retries(url, headers, payload)
-                except Exception as e:
-                    err_msg = f"request_failed: {e}"
-                    write_jsonl_line(failures_file, {"id": row.get("id"), "error": err_msg})
-                    record = RowRecord(
-                        id=row.get("id"),
-                        year=row.get("year"),
-                        group=row.get("group"),
-                        problem_number=row.get("problem_number"),
-                        language=row.get("language"),
-                        multimodal=row.get("multimodal"),
-                        points=row.get("points"),
-                        answer=(row.get("answer") or "").strip().upper() or None,
-                        predicted=None,
-                        is_correct=None,
-                        points_earned=0,
-                        reasoning_mode=args.reasoning,
-                        latency_ms=None,
-                        prompt_tokens=None,
-                        completion_tokens=None,
-                        total_tokens=None,
-                        cost_usd=None,
-                        rationale=None,
-                        raw_text_response=None,
-                        generation_id=None,
-                        error=err_msg,
-                        warnings=(warnings + [f"attempt_{attempt}_request_failed"]) if warnings else [f"attempt_{attempt}_request_failed"],
-                    )
-                    rows.append(record)
-                    record_dict = asdict(record)
-                    results_records.append(record_dict)
-                    write_jsonl_line(results_jsonl, record_dict)
-                    request_failed = True
-                    break
-
-                latencies.append(latency_ms)
-
-                if resp.status_code != 200:
-                    err_msg = f"http_{resp.status_code}: {resp.text[:500]}"
-                    write_jsonl_line(failures_file, {"id": row.get("id"), "error": err_msg})
-                    record = RowRecord(
-                        id=row.get("id"),
-                        year=row.get("year"),
-                        group=row.get("group"),
-                        problem_number=row.get("problem_number"),
-                        language=row.get("language"),
-                        multimodal=row.get("multimodal"),
-                        points=row.get("points"),
-                        answer=(row.get("answer") or "").strip().upper() or None,
-                        predicted=None,
-                        is_correct=None,
-                        points_earned=0,
-                        reasoning_mode=args.reasoning,
-                        latency_ms=sum(latencies) if latencies else None,
-                        prompt_tokens=None,
-                        completion_tokens=None,
-                        total_tokens=None,
-                        cost_usd=None,
-                        rationale=None,
-                        raw_text_response=None,
-                        generation_id=None,
-                        error=err_msg,
-                        warnings=warnings or None,
-                    )
-                    rows.append(record)
-                    record_dict = asdict(record)
-                    results_records.append(record_dict)
-                    write_jsonl_line(results_jsonl, record_dict)
-                    request_failed = True
-                    break
-
-                try:
-                    data = resp.json()
-                except Exception:
-                    data = None
-
-                content_text = resp.text or ""
-                finish_reason = None
-                native_finish = None
-
-                if isinstance(data, dict):
-                    gen_id = data.get("id")
-                    model_echo = data.get("model")
-                    choices = data.get("choices") or []
-                    if choices and isinstance(choices, list):
-                        choice0 = choices[0] or {}
-                        finish_reason = choice0.get("finish_reason")
-                        native_finish = choice0.get("native_finish_reason")
-                        content_raw = ((choice0.get("message") or {}).get("content"))
-                        content_text = normalize_message_content(content_raw)
-                    usage = data.get("usage")
-                    if isinstance(usage, dict):
-                        last_usage = usage
-                        for key in ("prompt_tokens", "completion_tokens", "total_tokens"):
-                            val = usage.get(key)
-                            if isinstance(val, (int, float)):
-                                combined_usage[key] = combined_usage.get(key, 0.0) + float(val)
-                        cost_val = usage.get("cost") or usage.get("total_cost")
-                        if isinstance(cost_val, str):
-                            try:
-                                cost_val = float(cost_val)
-                            except Exception:
-                                cost_val = None
-                        if isinstance(cost_val, (int, float)):
-                            combined_usage["cost"] = combined_usage.get("cost", 0.0) + float(cost_val)
-                    write_jsonl_line(
-                        raw_responses_file,
-                        {
-                            "id": row.get("id"),
-                            "attempt": attempt,
-                            "response": data,
-                        },
-                    )
-                else:
-                    write_jsonl_line(
-                        raw_responses_file,
-                        {
-                            "id": row.get("id"),
-                            "attempt": attempt,
-                            "response": {"raw_text": content_text},
-                        },
-                    )
-
-                ans, rat, parse_warn = parse_answer_from_text(content_text or "", args.reasoning)
-
-                should_retry = False
-                finish_values = [finish_reason, native_finish]
-                if ans is None and attempt < max_attempts:
-                    for reason in finish_values:
-                        if isinstance(reason, str) and reason.lower() in {"length", "max_tokens", "max_tokens_exceeded"}:
-                            should_retry = True
-                            break
-
-                if should_retry:
-                    if max_tokens_current is None:
-                        next_tokens = DEFAULT_RETRY_MAX_TOKENS
-                    else:
-                        next_tokens = min(max_tokens_current * 2, 4096)
-                    warnings.append(
-                        f"max_tokens_retry_{max_tokens_current if max_tokens_current is not None else 'auto'}->{next_tokens}"
-                    )
-                    max_tokens_current = next_tokens
-                    continue
-
-                if parse_warn:
-                    warnings.append(parse_warn)
-
-                break
-
-            if request_failed:
-                if args.fail_fast:
-                    break
-                else:
-                    continue
-
-            answer_value = row.get("answer")
-            if pd.isna(answer_value) or answer_value is None:
-                normalized_answer = ""
-            else:
-                normalized_answer = str(answer_value)
-
-            gt = normalized_answer.strip().upper()
-            if not gt or gt not in LETTER_SET:
-                gt = None
-
-            is_correct = (ans == gt) if (ans is not None and gt is not None) else None
-
-            points_earned = 0.0
-            if is_correct:
-                raw_points = row.get("points")
-                if pd.isna(raw_points) or raw_points is None or raw_points == "":
-                    points_earned = 0.0
-                else:
-                    try:
-                        points_earned = float(raw_points)
-                    except (TypeError, ValueError):
-                        points_earned = 0.0
-
-            # Usage fields
-            prompt_tokens = completion_tokens = total_tokens = None
-            cost_usd = None
-            if combined_usage:
-                if "prompt_tokens" in combined_usage:
-                    prompt_tokens = int(combined_usage["prompt_tokens"])
-                if "completion_tokens" in combined_usage:
-                    completion_tokens = int(combined_usage["completion_tokens"])
-                if "total_tokens" in combined_usage:
-                    total_tokens = int(combined_usage["total_tokens"])
-                if "cost" in combined_usage:
-                    cost_usd = float(combined_usage["cost"])
-            elif isinstance(last_usage, dict):
-                prompt_tokens = last_usage.get("prompt_tokens")
-                completion_tokens = last_usage.get("completion_tokens")
-                total_tokens = last_usage.get("total_tokens")
-                cost_usd = last_usage.get("cost") or last_usage.get("total_cost")
-                if isinstance(cost_usd, str):
-                    try:
-                        cost_usd = float(cost_usd)
-                    except Exception:
-                        cost_usd = None
-
-            record = RowRecord(
-                id=row.get("id"),
-                year=row.get("year"),
-                group=row.get("group"),
-                problem_number=row.get("problem_number"),
-                language=row.get("language"),
-                multimodal=row.get("multimodal"),
-                points=row.get("points"),
-                answer=gt,
-                predicted=ans,
-                is_correct=is_correct,
-                points_earned=points_earned,
-                reasoning_mode=args.reasoning,
-                latency_ms=sum(latencies) if latencies else None,
-                prompt_tokens=prompt_tokens,
-                completion_tokens=completion_tokens,
-                total_tokens=total_tokens,
-                cost_usd=cost_usd,
-                rationale=rat,
-                raw_text_response=content_text,
-                generation_id=gen_id,
-                error=None,
-                warnings=warnings or None,
+        rows, results_records, skipped = asyncio.run(
+            evaluate_rows_async(
+                rows_data,
+                args,
+                model_info,
+                url,
+                headers,
+                results_jsonl,
+                raw_responses_file,
+                failures_file,
+                worker_count,
             )
-            rows.append(record)
-            record_dict = asdict(record)
-            results_records.append(record_dict)
-            write_jsonl_line(results_jsonl, record_dict)
+        )
 
-    # Save artifacts
-    # Build results DataFrame (ensure columns even if no rows)
     if rows:
         results_df = pd.DataFrame(results_records)
     else:
@@ -861,10 +1068,6 @@ def main():
     with open(results_json_path, "w", encoding="utf-8") as f:
         json.dump(results_records, f, ensure_ascii=False, indent=2)
 
-    # Failures
-    # files already written incrementally
-
-    # Metrics
     if len(results_df.columns) > 0:
         answered_mask = results_df["predicted"].notna() & results_df["error"].isna()
     else:
@@ -875,16 +1078,14 @@ def main():
     else:
         failed_count = 0
 
-    # Skipped count tracked externally
     skipped_count = skipped
 
-    # Accuracy metrics
     if len(results_df.columns) > 0:
         correct_mask = results_df["is_correct"] == True
         accuracy = float((correct_mask & answered_mask).sum() / answered_count) if answered_count else 0.0
     else:
         accuracy = 0.0
-    # Points-weighted accuracy
+
     if len(results_df.columns) > 0 and not answered_mask.empty:
         answered_points = results_df.loc[answered_mask, "points"].astype(float)
         earned_points = results_df.loc[answered_mask, "points_earned"].astype(float)
@@ -892,7 +1093,6 @@ def main():
     else:
         p_weighted_accuracy = 0.0
 
-    # Latency
     if len(results_df.columns) > 0 and not answered_mask.empty:
         lat = results_df.loc[answered_mask, "latency_ms"].dropna().astype(float)
         mean_latency = float(lat.mean()) if not lat.empty else None
@@ -901,7 +1101,6 @@ def main():
         mean_latency = None
         median_latency = None
 
-    # Tokens / cost
     if len(results_df.columns) > 0 and not answered_mask.empty:
         total_tokens_series = results_df.loc[answered_mask, "total_tokens"].dropna().astype(int)
         mean_tokens = float(total_tokens_series.mean()) if not total_tokens_series.empty else None
@@ -913,7 +1112,6 @@ def main():
         total_cost = 0.0
         unknown_usage_count = 0
 
-    # Breakdowns
     def breakdown_by(col: str) -> Dict[str, Any]:
         result: Dict[str, Any] = {}
         if len(results_df.columns) == 0 or col not in results_df.columns or answered_count == 0:
@@ -946,9 +1144,9 @@ def main():
     with open(os.path.join(run_dir, "metrics.json"), "w", encoding="utf-8") as f:
         json.dump(metrics, f, ensure_ascii=False, indent=2)
 
-    # Save config
     args_snapshot = vars(args).copy()
     args_snapshot["dataset"] = dataset_path
+    args_snapshot["worker_count"] = worker_count
     config = {
         "timestamp_utc": ts,
         "args": args_snapshot,
@@ -957,7 +1155,6 @@ def main():
     with open(os.path.join(run_dir, "config.json"), "w", encoding="utf-8") as f:
         json.dump(config, f, ensure_ascii=False, indent=2)
 
-    # Console summary
     print("Summary:")
     print(f"  Answered: {answered_count}")
     print(f"  Skipped: {skipped_count}")
@@ -970,6 +1167,8 @@ def main():
         print("  Mean latency: n/a")
     print(f"  Known total cost: ${total_cost:.4f}")
     print(f"  Unknown usage rows: {unknown_usage_count}")
+    print(f"  Worker count: {worker_count}")
+
 
 
 if __name__ == "__main__":

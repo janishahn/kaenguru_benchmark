@@ -30,6 +30,7 @@ Run Examples
 - Vision (GPT‑5), chain-of-thought:
   - `uv run python eval_run.py --dataset /abs/path/to/dataset.parquet --model openai/gpt-5 --reasoning cot --max_tokens 256`
 - Omit `--max_tokens` to let the provider choose defaults; the runner only sends a value if you specify one or if a retry needs more budget.
+- Add `--sequential` if you need to process requests strictly one at a time.
 
 Artifacts
 
@@ -43,5 +44,29 @@ Artifacts
 
 Notes
 
+- The runner issues OpenRouter requests concurrently by default (worker count is derived from available CPUs); add `--sequential` if you prefer single-request processing.
+- A shared adaptive rate limiter keeps all workers within the provider’s limits. You can optionally seed per-model limits in `models.json` (see below); the limiter still backs off automatically when throttled.
 - The model registry is in `models.json`. Add entries to extend.
 - If a text-only model is added without vision, image questions are skipped.
+
+Example `models.json` entry (all optional fields shown):
+
+```jsonc
+{
+  "models": [
+    {
+      "id": "openai/gpt-5",
+      "label": "OpenAI GPT-5",
+      "supports_vision": true,
+      "supports_json_response_format": true,
+      "rate_limit": {
+        "requests_per_second": 3,
+        "requests_per_minute": 150,
+        "min_interval_seconds": 0.5
+      }
+    }
+  ]
+}
+```
+
+- You can supply any subset of the `rate_limit` fields. The evaluator converts the first valid value into an initial inter-request delay and adapts from there based on live responses.

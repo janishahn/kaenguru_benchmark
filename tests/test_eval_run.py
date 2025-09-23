@@ -4,6 +4,7 @@ import sys
 from pathlib import Path
 from io import BytesIO
 
+import httpx
 import pandas as pd
 from PIL import Image
 
@@ -131,18 +132,16 @@ def run_eval(monkeypatch, tmp_path: Path, dataset_path: Path, model_id: str, res
 
     monkeypatch.setattr(eval_run, "read_models_registry", fake_registry)
 
-    # Patch requests.post with queued responses
+    # Patch httpx.AsyncClient.post with queued responses
     calls = {"count": 0}
 
-    def fake_post(url, headers=None, json=None, timeout=None):
+    async def fake_post(self, url, *, headers=None, json=None, timeout=None, **kwargs):
         i = calls["count"]
         calls["count"] += 1
         resp = responses[i] if i < len(responses) else responses[-1]
         return resp
 
-    import requests as _requests
-
-    monkeypatch.setattr(_requests, "post", fake_post)
+    monkeypatch.setattr(httpx.AsyncClient, "post", fake_post)
 
     # Prepare args
     out_dir = tmp_path / "runs"
@@ -315,11 +314,11 @@ def test_http_error_failure(monkeypatch, tmp_path):
     )
     df = pd.read_parquet(run_dir / "results.parquet", engine="pyarrow")
     row = df.iloc[0]
-    assert row["error"].startswith("http_500")
+    assert row["error"].startswith("http_error_500")
     assert pd.isna(row["predicted"]) or row["predicted"] is None
 
     failures = (run_dir / "failures.jsonl").read_text().strip().splitlines()
-    assert failures and json.loads(failures[0])["error"].startswith("http_500")
+    assert failures and json.loads(failures[0])["error"].startswith("http_error_500")
 
 
 def test_skip_images_for_text_only_model(monkeypatch, tmp_path):

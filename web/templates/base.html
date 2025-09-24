@@ -1,0 +1,34 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="light">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>{% block title %}Benchmark Dashboard{% endblock %}</title>
+    <link rel="stylesheet" href="/static/css/base.css" />
+    <link rel="stylesheet" href="/static/css/theme.css" />
+    {% block head %}{% endblock %}
+  </head>
+  <body>
+    <header class="top-bar">
+      <div class="top-bar__left">
+        <a href="/" class="logo">Känguru Dashboard</a>
+        <nav class="top-nav">
+          <a href="/" class="nav-link">Overview</a>
+          <a href="/compare" class="nav-link">Compare</a>
+        </nav>
+      </div>
+      <div class="top-bar__right">
+        <button id="theme-toggle" class="pill">Toggle theme</button>
+      </div>
+    </header>
+    <main class="page" id="page-root">
+      {% block content %}{% endblock %}
+    </main>
+    <script src="/static/js/htmx.min.js"></script>
+    <script src="/static/js/alpine.min.js"></script>
+    <script src="/static/js/echarts.min.js"></script>
+    <script src="/static/js/charts.js"></script>
+    <script src="/static/js/app.js"></script>
+    {% block scripts %}{% endblock %}
+  </body>
+</html>

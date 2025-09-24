@@ -1,0 +1,256 @@
+{% extends "base.html" %}
+{% block title %}Run {{ run.run_id }}{% endblock %}
+{% block content %}
+<section class="run-detail" data-run-id="{{ run.run_id }}">
+  <header class="section__header">
+    <div>
+      <h1>{{ run.model_label or run.model_id }}</h1>
+      <p>{{ run.run_id }} · Dataset {{ run.dataset_name or 'unknown' }}</p>
+    </div>
+    <div class="section__actions">
+      <button class="pill" id="export-json">Export JSON</button>
+      <button class="pill" id="export-csv">Export CSV</button>
+    </div>
+  </header>
+
+  <div class="summary-grid">
+    <div class="summary-card">
+      <span class="summary-label">Accuracy</span>
+      <span class="summary-value">{{ (run.metrics.accuracy * 100) | round(2) }}%</span>
+    </div>
+    <div class="summary-card">
+      <span class="summary-label">Points weighted accuracy</span>
+      <span class="summary-value">{{ (run.metrics.points_weighted_accuracy * 100) | round(2) }}%</span>
+    </div>
+    <div class="summary-card">
+      <span class="summary-label">Answered</span>
+      <span class="summary-value">{{ run.metrics.answered_count }}</span>
+    </div>
+    <div class="summary-card">
+      <span class="summary-label">Skipped</span>
+      <span class="summary-value">{{ run.metrics.skipped_count }}</span>
+    </div>
+    <div class="summary-card">
+      <span class="summary-label">Mean latency (ms)</span>
+      <span class="summary-value">{{ run.metrics.mean_latency_ms | round(1) if run.metrics.mean_latency_ms else '–' }}</span>
+    </div>
+    <div class="summary-card">
+      <span class="summary-label">Total known cost ($)</span>
+      <span class="summary-value">{{ run.metrics.total_cost_usd_known | round(3) if run.metrics.total_cost_usd_known else '–' }}</span>
+    </div>
+  </div>
+
+  <div class="detail-layout">
+    <aside class="filters" id="filter-panel">
+      <header class="filters__header">
+        <h2>Filters</h2>
+      </header>
+      <form id="filters-form">
+        <div class="filter-group" data-field="group">
+          <label>Group</label>
+          <div class="chip-select" data-facet="groups"></div>
+        </div>
+        <div class="filter-group" data-field="year">
+          <label>Year</label>
+          <div class="chip-select" data-facet="years"></div>
+        </div>
+        <div class="filter-group" data-field="language">
+          <label>Language</label>
+          <div class="chip-select" data-facet="languages"></div>
+        </div>
+        <div class="filter-group" data-field="multimodal">
+          <label>Multimodal</label>
+          <select name="multimodal">
+            <option value="">Any</option>
+            <option value="true">Yes</option>
+            <option value="false">No</option>
+          </select>
+        </div>
+        <div class="filter-group" data-field="correctness">
+          <label>Correctness</label>
+          <select name="correctness">
+            <option value="">Any</option>
+            <option value="true">Correct</option>
+            <option value="false">Incorrect</option>
+            <option value="unknown">Unknown</option>
+          </select>
+        </div>
+        <div class="filter-group" data-field="predicted">
+          <label>Predicted letter</label>
+          <div class="chip-select" data-facet="predicted_letters"></div>
+        </div>
+        <div class="filter-group" data-field="reasoning_mode">
+          <label>Reasoning mode</label>
+          <div class="chip-select" data-facet="reasoning_modes"></div>
+        </div>
+        <div class="filter-group filter-group--range">
+          <label>Points</label>
+          <div class="range-inputs">
+            <input type="number" step="1" name="points_min" placeholder="min" />
+            <input type="number" step="1" name="points_max" placeholder="max" />
+          </div>
+        </div>
+        <div class="filter-group filter-group--range">
+          <label>Latency (ms)</label>
+          <div class="range-inputs">
+            <input type="number" step="1" name="latency_min" placeholder="min" />
+            <input type="number" step="1" name="latency_max" placeholder="max" />
+          </div>
+        </div>
+        <div class="filter-group filter-group--range">
+          <label>Total tokens</label>
+          <div class="range-inputs">
+            <input type="number" step="1" name="tokens_min" placeholder="min" />
+            <input type="number" step="1" name="tokens_max" placeholder="max" />
+          </div>
+        </div>
+        <div class="filter-group filter-group--range">
+          <label>Cost (USD)</label>
+          <div class="range-inputs">
+            <input type="number" step="0.001" name="cost_min" placeholder="min" />
+            <input type="number" step="0.001" name="cost_max" placeholder="max" />
+          </div>
+        </div>
+        <div class="filter-group" data-field="warnings">
+          <label>Warnings</label>
+          <select name="warnings_present">
+            <option value="">Any</option>
+            <option value="true">Has warnings</option>
+            <option value="false">No warnings</option>
+          </select>
+          <div class="chip-select" data-facet="warning_types"></div>
+        </div>
+        <div class="filter-actions">
+          <button type="submit" class="pill">Apply</button>
+          <button type="button" id="reset-filters" class="pill pill--ghost">Reset</button>
+        </div>
+        <div class="filter-presets">
+          <input type="text" id="preset-name" placeholder="Preset name" />
+          <button type="button" id="save-preset" class="pill">Save preset</button>
+          <select id="preset-select"></select>
+          <button type="button" id="load-preset" class="pill pill--ghost">Load</button>
+        </div>
+      </form>
+    </aside>
+
+    <section class="detail-main">
+      <div class="chart-grid">
+        <div class="chart-card">
+          <h3>Accuracy by group</h3>
+          <div class="chart-card__canvas">
+            <div class="chart-card__surface" id="chart-group"></div>
+          </div>
+        </div>
+        <div class="chart-card">
+          <h3>Accuracy by year</h3>
+          <div class="chart-card__canvas">
+            <div class="chart-card__surface" id="chart-year"></div>
+          </div>
+        </div>
+        <div class="chart-card">
+          <h3>Confusion matrix</h3>
+          <div class="chart-card__canvas">
+            <div class="chart-card__surface" id="chart-confusion"></div>
+          </div>
+        </div>
+        <div class="chart-card">
+          <h3>Latency distribution</h3>
+          <div class="chart-card__canvas">
+            <div class="chart-card__surface" id="chart-latency"></div>
+          </div>
+        </div>
+        <div class="chart-card">
+          <h3>Token distribution</h3>
+          <div class="chart-card__canvas">
+            <div class="chart-card__surface" id="chart-token"></div>
+          </div>
+        </div>
+        <div class="chart-card">
+          <h3>Predicted letters</h3>
+          <div class="chart-card__canvas">
+            <div class="chart-card__surface" id="chart-predicted"></div>
+          </div>
+        </div>
+      </div>
+
+      <div class="table-toolbar">
+        <div id="active-filters"></div>
+        <div class="table-toolbar__right">
+          <label>Sort by
+            <select id="sort-by">
+              <option value="id">ID</option>
+              <option value="points">Points</option>
+              <option value="is_correct">Correctness</option>
+              <option value="latency_ms">Latency</option>
+              <option value="total_tokens">Total tokens</option>
+              <option value="cost_usd">Cost</option>
+              <option value="points_earned">Points earned</option>
+            </select>
+          </label>
+          <select id="sort-dir">
+            <option value="asc">Asc</option>
+            <option value="desc">Desc</option>
+          </select>
+          <select id="page-size">
+            <option value="25">25</option>
+            <option value="50">50</option>
+            <option value="100">100</option>
+          </select>
+        </div>
+      </div>
+
+      <div class="table-container">
+        <table id="results-table">
+          <thead>
+            <tr>
+              <th>ID</th>
+              <th>Group</th>
+              <th>Year</th>
+              <th>Problem</th>
+              <th>Points</th>
+              <th>Answer</th>
+              <th>Predicted</th>
+              <th>Correct</th>
+              <th>Points earned</th>
+              <th>Latency (ms)</th>
+              <th>Total tokens</th>
+              <th>Cost</th>
+              <th>Warnings</th>
+            </tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </div>
+      <div class="pagination" id="results-pagination"></div>
+    </section>
+
+    <aside class="issues-panel">
+      <div class="issues-section">
+        <h3>Top warnings</h3>
+        <ul id="warning-toplist"></ul>
+      </div>
+      <div class="issues-section">
+        <h3>Failures timeline</h3>
+        <ul id="failures-timeline"></ul>
+      </div>
+    </aside>
+  </div>
+
+  <section id="row-drawer" class="row-drawer hidden">
+    <header class="row-drawer__header">
+      <h2 id="row-drawer-title">Row details</h2>
+      <button id="close-row" class="pill pill--ghost">Close</button>
+    </header>
+    <div class="row-drawer__content">
+      <div class="row-detail__meta" id="row-meta"></div>
+      <div class="row-detail__rationale hidden" id="row-rationale"></div>
+      <div class="row-detail__raw hidden" id="row-raw">
+        <button type="button" class="pill pill--ghost" id="toggle-raw-response">Show raw response</button>
+        <pre id="raw-response" class="row-raw__content hidden"></pre>
+      </div>
+      <div class="row-detail__dataset" id="row-dataset"></div>
+    </div>
+  </section>
+</section>
+<script id="run-bootstrap" type="application/json">{{ {"runId": run.run_id} | tojson }}</script>
+{% endblock %}

@@ -80,6 +80,10 @@ class RowRecord:
     prompt_tokens: Optional[int]
     completion_tokens: Optional[int]
     total_tokens: Optional[int]
+    # Extra usage details when available from providers (e.g., OpenRouter)
+    reasoning_tokens: Optional[int] = None
+    cached_prompt_tokens: Optional[int] = None
+    audio_prompt_tokens: Optional[int] = None
     cost_usd: Optional[float]
     rationale: Optional[str]
     raw_text_response: Optional[str]
@@ -208,31 +212,53 @@ def coerce_list_of_bytes(x: Any) -> Optional[List[bytes]]:
 
 
 def pil_from_bytes(img_bytes: bytes) -> Optional[Image.Image]:
+    """Open image bytes without forcing colorspace.
+
+    Preserve alpha and original mode; downstream encoders decide the right
+    output format and perform conversion only when needed (e.g. JPEG).
+    """
     try:
-        return Image.open(BytesIO(img_bytes)).convert("RGB")
+        img = Image.open(BytesIO(img_bytes))
+        # Ensure the image is actually loaded to catch decoding errors early
+        img.load()
+        return img
     except Exception:
         return None
 
 
-def image_to_data_url(img: Image.Image, prefer_format: Optional[str] = None) -> Tuple[str, str]:
-    # Resize if needed
-    max_dim = 1024
+def image_to_data_url(
+    img: Image.Image,
+    *,
+    prefer_format: Optional[str] = None,
+    max_dim: int = 1024,
+    jpeg_quality: int = 85,
+) -> Tuple[str, str]:
+    # Downscale while preserving aspect ratio; never upscale.
     if max(img.size) > max_dim:
         img = img.copy()
-        img.thumbnail((max_dim, max_dim))
+        img.thumbnail((max_dim, max_dim), Image.Resampling.LANCZOS)
 
-    # Choose encoding format
-    fmt = (prefer_format or "PNG").upper()
-    if fmt not in {"PNG", "JPEG", "JPG"}:
-        fmt = "PNG"
+    # Choose encoding format based on alpha channel and preference
+    fmt = (prefer_format or "").upper().strip()
+    has_alpha = (getattr(img, "mode", "").upper() in {"RGBA", "LA"})
+    if not fmt:
+        fmt = "PNG" if has_alpha else "JPEG"
     if fmt == "JPG":
         fmt = "JPEG"
+    if fmt not in {"PNG", "JPEG"}:
+        fmt = "PNG" if has_alpha else "JPEG"
     mime = "image/png" if fmt == "PNG" else "image/jpeg"
 
+    # Encode
     buf = BytesIO()
     save_kwargs = {"format": fmt}
     if fmt == "JPEG":
-        save_kwargs.update({"quality": 90})
+        save_kwargs.update({"quality": int(max(50, min(100, jpeg_quality))), "optimize": True, "progressive": True})
+        if img.mode not in ("RGB", "L"):
+            img = img.convert("RGB")
+    else:
+        # For PNG, enable optimization; avoid palette conversion to preserve details.
+        save_kwargs.update({"optimize": True})
     img.save(buf, **save_kwargs)
     b64 = base64.b64encode(buf.getvalue()).decode("ascii")
     return f"data:{mime};base64,{b64}", fmt
@@ -243,6 +269,8 @@ def build_messages(
     reasoning: str,
     model: ModelInfo,
     encoded_images: Dict[str, Optional[str]],
+    *,
+    image_detail: str = "auto",
 ) -> List[Dict[str, Any]]:
     language = (row.get("language") or "de").lower()
     is_de = language == "de"
@@ -283,7 +311,7 @@ def build_messages(
         content_parts.append(
             {
                 "type": "image_url",
-                "image_url": {"url": encoded_images["question"], "detail": "auto"},
+                "image_url": {"url": encoded_images["question"], "detail": image_detail},
             }
         )
 
@@ -294,7 +322,7 @@ def build_messages(
             a_label = ("Zusatzbild" if is_de else "Additional image") + f" {i}:"
             content_parts.append({"type": "text", "text": a_label})
             content_parts.append(
-                {"type": "image_url", "image_url": {"url": url, "detail": "auto"}}
+                {"type": "image_url", "image_url": {"url": url, "detail": image_detail}}
             )
 
     # Options A..E
@@ -308,7 +336,7 @@ def build_messages(
             lbl = ("Option" if not is_de else "Option") + f" {letter} Bild:"
             content_parts.append({"type": "text", "text": lbl})
             content_parts.append(
-                {"type": "image_url", "image_url": {"url": url, "detail": "auto"}}
+                {"type": "image_url", "image_url": {"url": url, "detail": image_detail}}
             )
 
     # Instruction last
@@ -608,7 +636,11 @@ async def evaluate_single_row(
             if img is None:
                 warnings.append("question_image_decode_failed")
             else:
-                url_data, _ = image_to_data_url(img)
+                url_data, _ = image_to_data_url(
+                    img,
+                    max_dim=(args.image_max_dim or 1024),
+                    jpeg_quality=(args.image_jpeg_quality or 85),
+                )
                 encoded_images["question"] = url_data
 
         for letter in ["A", "B", "C", "D", "E"]:
@@ -618,7 +650,11 @@ async def evaluate_single_row(
                 if img is None:
                     warnings.append(f"opt_{letter}_image_decode_failed")
                 else:
-                    url_data, _ = image_to_data_url(img)
+                    url_data, _ = image_to_data_url(
+                        img,
+                        max_dim=(args.image_max_dim or 1024),
+                        jpeg_quality=(args.image_jpeg_quality or 85),
+                    )
                     encoded_images[f"opt_{letter}"] = url_data
 
         for idx, b in enumerate(assoc_bytes):
@@ -627,10 +663,20 @@ async def evaluate_single_row(
                 warnings.append(f"assoc_{idx+1}_image_decode_failed")
                 encoded_images["assoc_list"].append(None)
             else:
-                url_data, _ = image_to_data_url(img)
+                url_data, _ = image_to_data_url(
+                    img,
+                    max_dim=(args.image_max_dim or 1024),
+                    jpeg_quality=(args.image_jpeg_quality or 85),
+                )
                 encoded_images["assoc_list"].append(url_data)
 
-    messages = build_messages(row, args.reasoning, model_info, encoded_images)
+    messages = build_messages(
+        row,
+        args.reasoning,
+        model_info,
+        encoded_images,
+        image_detail=(args.image_detail or "auto"),
+    )
 
     payload: Dict[str, Any] = {
         "model": model_info.id,
@@ -646,6 +692,7 @@ async def evaluate_single_row(
     attempt = 0
     max_attempts = 5
     combined_usage: Dict[str, float] = {}
+    combined_usage_details: Dict[str, float] = {}  # reasoning_tokens, cached_prompt_tokens, audio_prompt_tokens
     last_usage: Optional[Dict[str, Any]] = None
     latencies: List[float] = []
     ans: Optional[str] = None
@@ -738,6 +785,18 @@ async def evaluate_single_row(
                     val = usage.get(key)
                     if isinstance(val, (int, float)):
                         combined_usage[key] = combined_usage.get(key, 0.0) + float(val)
+                # Details when available
+                prompt_details = usage.get("prompt_tokens_details") or {}
+                if isinstance(prompt_details, dict):
+                    for k_src, k_dst in (("cached_tokens", "cached_prompt_tokens"), ("audio_tokens", "audio_prompt_tokens")):
+                        val = prompt_details.get(k_src)
+                        if isinstance(val, (int, float)):
+                            combined_usage_details[k_dst] = combined_usage_details.get(k_dst, 0.0) + float(val)
+                completion_details = usage.get("completion_tokens_details") or {}
+                if isinstance(completion_details, dict):
+                    rt = completion_details.get("reasoning_tokens")
+                    if isinstance(rt, (int, float)):
+                        combined_usage_details["reasoning_tokens"] = combined_usage_details.get("reasoning_tokens", 0.0) + float(rt)
                 cost_val = usage.get("cost") or usage.get("total_cost")
                 if isinstance(cost_val, str):
                     try:
@@ -746,6 +805,80 @@ async def evaluate_single_row(
                         cost_val = None
                 if isinstance(cost_val, (int, float)):
                     combined_usage["cost"] = combined_usage.get("cost", 0.0) + float(cost_val)
+            # Fallback: some providers put usage into an X-Usage header
+            elif hasattr(resp, "headers"):
+                hdr = None
+                try:
+                    hdr = resp.headers.get("x-usage") or resp.headers.get("X-Usage")
+                except Exception:
+                    hdr = None
+                if hdr:
+                    parsed: Optional[Dict[str, Any]] = None
+                    # First try JSON
+                    try:
+                        parsed_json = json.loads(hdr)
+                        if isinstance(parsed_json, dict):
+                            parsed = parsed_json
+                    except Exception:
+                        parsed = None
+                    # Then try a simple key=value parser (comma/semicolon separated)
+                    if parsed is None:
+                        try:
+                            kv: Dict[str, float] = {}
+                            for part in re.split(r"[,;]", hdr):
+                                if "=" not in part:
+                                    continue
+                                k, v = part.split("=", 1)
+                                k = k.strip()
+                                v = v.strip()
+                                if not k:
+                                    continue
+                                try:
+                                    kv[k] = float(v)
+                                except Exception:
+                                    continue
+                            if kv:
+                                parsed = dict(kv)
+                        except Exception:
+                            parsed = None
+                    # Apply parsed usage fields if any
+                    if isinstance(parsed, dict):
+                        for key in ("prompt_tokens", "completion_tokens", "total_tokens"):
+                            val = parsed.get(key)
+                            if isinstance(val, (int, float)):
+                                combined_usage[key] = combined_usage.get(key, 0.0) + float(val)
+                        # Details: either nested objects or dot-keys
+                        prompt_details = parsed.get("prompt_tokens_details") if isinstance(parsed.get("prompt_tokens_details"), dict) else {}
+                        completion_details = parsed.get("completion_tokens_details") if isinstance(parsed.get("completion_tokens_details"), dict) else {}
+
+                        # Also support flattened keys like "prompt_tokens_details.cached_tokens=123"
+                        def _maybe_from_flat(src_key: str) -> Optional[float]:
+                            val = parsed.get(src_key)
+                            try:
+                                if isinstance(val, str):
+                                    return float(val)
+                                if isinstance(val, (int, float)):
+                                    return float(val)
+                            except Exception:
+                                return None
+                            return None
+
+                        for k_src, k_dst in (("cached_tokens", "cached_prompt_tokens"), ("audio_tokens", "audio_prompt_tokens")):
+                            val = (prompt_details or {}).get(k_src)
+                            if not isinstance(val, (int, float)):
+                                val = _maybe_from_flat(f"prompt_tokens_details.{k_src}")
+                            if isinstance(val, (int, float)):
+                                combined_usage_details[k_dst] = combined_usage_details.get(k_dst, 0.0) + float(val)
+
+                        rt = (completion_details or {}).get("reasoning_tokens")
+                        if not isinstance(rt, (int, float)):
+                            rt = _maybe_from_flat("completion_tokens_details.reasoning_tokens")
+                        if isinstance(rt, (int, float)):
+                            combined_usage_details["reasoning_tokens"] = combined_usage_details.get("reasoning_tokens", 0.0) + float(rt)
+
+                        cost_val = parsed.get("cost") or parsed.get("total_cost")
+                        if isinstance(cost_val, (int, float)):
+                            combined_usage["cost"] = combined_usage.get("cost", 0.0) + float(cost_val)
             raw_entries.append(
                 {
                     "id": row.get("id"),
@@ -812,6 +945,7 @@ async def evaluate_single_row(
                 points_earned = 0.0
 
     prompt_tokens = completion_tokens = total_tokens = None
+    reasoning_tokens = cached_prompt_tokens = audio_prompt_tokens = None
     cost_usd = None
     if combined_usage:
         if "prompt_tokens" in combined_usage:
@@ -822,6 +956,12 @@ async def evaluate_single_row(
             total_tokens = int(combined_usage["total_tokens"])
         if "cost" in combined_usage:
             cost_usd = float(combined_usage["cost"])
+        if "reasoning_tokens" in combined_usage_details:
+            reasoning_tokens = int(combined_usage_details["reasoning_tokens"])
+        if "cached_prompt_tokens" in combined_usage_details:
+            cached_prompt_tokens = int(combined_usage_details["cached_prompt_tokens"])
+        if "audio_prompt_tokens" in combined_usage_details:
+            audio_prompt_tokens = int(combined_usage_details["audio_prompt_tokens"])
     elif isinstance(last_usage, dict):
         prompt_tokens = last_usage.get("prompt_tokens")
         completion_tokens = last_usage.get("completion_tokens")
@@ -832,6 +972,17 @@ async def evaluate_single_row(
                 cost_usd = float(cost_usd)
             except Exception:
                 cost_usd = None
+        # Details (single-attempt fallback)
+        try:
+            pd = last_usage.get("prompt_tokens_details") or {}
+            if isinstance(pd, dict):
+                cached_prompt_tokens = pd.get("cached_tokens") if isinstance(pd.get("cached_tokens"), int) else cached_prompt_tokens
+                audio_prompt_tokens = pd.get("audio_tokens") if isinstance(pd.get("audio_tokens"), int) else audio_prompt_tokens
+            cd = last_usage.get("completion_tokens_details") or {}
+            if isinstance(cd, dict):
+                reasoning_tokens = cd.get("reasoning_tokens") if isinstance(cd.get("reasoning_tokens"), int) else reasoning_tokens
+        except Exception:
+            pass
 
     record = RowRecord(
         id=row.get("id"),
@@ -850,6 +1001,9 @@ async def evaluate_single_row(
         prompt_tokens=prompt_tokens,
         completion_tokens=completion_tokens,
         total_tokens=total_tokens,
+        reasoning_tokens=reasoning_tokens,
+        cached_prompt_tokens=cached_prompt_tokens,
+        audio_prompt_tokens=audio_prompt_tokens,
         cost_usd=cost_usd,
         rationale=rat,
         raw_text_response=content_text,
@@ -965,6 +1119,10 @@ def main():
     )
     parser.add_argument("--output_dir", default="runs")
     parser.add_argument("--fail_fast", action="store_true")
+    # Image controls for multimodal inputs
+    parser.add_argument("--image_max_dim", type=int, default=1024, help="Max image dimension (long edge) in pixels; no upscaling")
+    parser.add_argument("--image_jpeg_quality", type=int, default=85, help="JPEG quality (50–100)")
+    parser.add_argument("--image_detail", choices=["auto", "low", "high"], default="auto", help="Vision detail hint for providers that support it")
     args = parser.parse_args()
 
     load_env_file()

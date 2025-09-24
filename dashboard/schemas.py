@@ -74,12 +74,21 @@ class RowRecord(BaseModel):
     prompt_tokens: Optional[int]
     completion_tokens: Optional[int]
     total_tokens: Optional[int]
+    # Optional usage details captured from some providers (e.g., OpenRouter)
+    reasoning_tokens: Optional[int] = None
+    cached_prompt_tokens: Optional[int] = None
+    audio_prompt_tokens: Optional[int] = None
     cost_usd: Optional[float]
     rationale: Optional[str]
     raw_text_response: Optional[str]
     generation_id: Optional[str]
     error: Optional[str]
     warnings: Optional[List[str]] = None
+
+    # Allow forward compatibility if additional fields are written by the runner
+    model_config = {
+        "extra": "ignore",
+    }
 
 
 class RunPaths(BaseModel):

@@ -32,12 +32,28 @@ Run Examples
 - Omit `--max_tokens` to let the provider choose defaults; the runner only sends a value if you specify one or if a retry needs more budget.
 - Add `--sequential` if you need to process requests strictly one at a time.
 
+Image Controls (to reduce input bloat)
+
+- The evaluator downsizes images before sending to the model. Flags:
+  - `--image_max_dim` (default `1024`): long-edge limit in pixels; images never upscale.
+  - `--image_jpeg_quality` (default `85`): JPEG quality (50–100). PNG is used automatically when alpha is present; otherwise JPEG.
+  - `--image_detail` (default `auto`): passes `auto|low|high` as an image detail hint for providers that support it.
+
+Token Usage Details
+
+- When the provider returns usage in the response body (or an `X-Usage` header), the runner records:
+  - `prompt_tokens`, `completion_tokens`, `total_tokens` and `cost`/`total_cost`.
+  - If present, additional details are captured: `completion_tokens_details.reasoning_tokens` and `prompt_tokens_details.{cached_tokens,audio_tokens}`.
+- These are stored per row in `results.parquet`/`results.{json,jsonl}` as optional fields:
+  - `reasoning_tokens`, `cached_prompt_tokens`, `audio_prompt_tokens`.
+- Not all models/providers surface these fields; logging is best‑effort. Unknown usage remains counted under the "Unknown usage rows" metric in `metrics.json` and the dashboard.
+
 Artifacts
 
 - Under `runs/{timestamp}_{model}/` the script writes:
   - `results.parquet` – per-row results
   - `results.json` / `results.jsonl` – same results in human-readable form (`results.jsonl` streams each row as soon as it completes)
-  - `metrics.json` – aggregates and cost totals
+- `metrics.json` – aggregates and cost totals
   - `config.json` – run configuration and model info
   - `failures.jsonl` – errors and diagnostics (streamed incrementally)
   - `raw_responses.jsonl` – raw API responses per attempt (useful when a model misbehaves)

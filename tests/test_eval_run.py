@@ -96,6 +96,8 @@ class FakeResp:
         if text is None and payload is not None:
             text = json.dumps(payload)
         self.text = text or ""
+        # Optional headers mapping for fallback parsing
+        self.headers = {}
 
     def json(self):
         if self._payload is None:
@@ -301,6 +303,103 @@ def test_list_content_response(monkeypatch, tmp_path):
 
     raw_payload = json.loads((run_dir / "raw_responses.jsonl").read_text().strip())
     assert raw_payload["id"] == 7
+
+
+def test_usage_details_in_response_json(monkeypatch, tmp_path):
+    dataset = write_parquet(tmp_path, [make_row(8, with_images=False)])
+    payload = {
+        "id": "gen_json_usage",
+        "model": "openai/gpt-5",
+        "choices": [{"message": {"content": '{"answer":"A"}'}}],
+        "usage": {
+            "prompt_tokens": 20,
+            "completion_tokens": 10,
+            "total_tokens": 30,
+            "completion_tokens_details": {"reasoning_tokens": 42},
+            "prompt_tokens_details": {"cached_tokens": 100, "audio_tokens": 0},
+        },
+    }
+    run_dir = run_eval(
+        monkeypatch,
+        tmp_path,
+        dataset,
+        model_id="openai/gpt-5",
+        responses=[FakeResp(200, payload)],
+    )
+    import pandas as pd
+
+    df = pd.read_parquet(run_dir / "results.parquet", engine="pyarrow")
+    row = df.iloc[0]
+    assert row["predicted"] == "A"
+    assert row["total_tokens"] == 30
+    assert row["reasoning_tokens"] == 42
+    assert row["cached_prompt_tokens"] == 100
+    assert row["audio_prompt_tokens"] == 0
+
+
+def test_x_usage_header_fallback(monkeypatch, tmp_path):
+    dataset = write_parquet(tmp_path, [make_row(9, with_images=False)])
+    payload = {
+        "id": "gen_hdr_usage",
+        "model": "openai/gpt-5",
+        "choices": [{"message": {"content": '{"answer":"B"}'}}],
+        # usage intentionally omitted to force header fallback
+    }
+    resp = FakeResp(200, payload)
+    # Provide JSON-encoded usage in headers
+    header_usage = {
+        "prompt_tokens": 11,
+        "completion_tokens": 6,
+        "total_tokens": 17,
+        "completion_tokens_details": {"reasoning_tokens": 5},
+        "prompt_tokens_details": {"cached_tokens": 3, "audio_tokens": 1},
+        "cost": 0.0015,
+    }
+    resp.headers = {"X-Usage": json.dumps(header_usage)}
+
+    run_dir = run_eval(
+        monkeypatch,
+        tmp_path,
+        dataset,
+        model_id="openai/gpt-5",
+        responses=[resp],
+    )
+    import pandas as pd
+
+    df = pd.read_parquet(run_dir / "results.parquet", engine="pyarrow")
+    row = df.iloc[0]
+    assert row["predicted"] == "B"
+    assert row["total_tokens"] == 17
+    assert row["reasoning_tokens"] == 5
+    assert row["cached_prompt_tokens"] == 3
+    assert row["audio_prompt_tokens"] == 1
+
+    # Now verify non-JSON key=value format also parses
+    payload2 = {
+        "id": "gen_hdr_usage2",
+        "model": "openai/gpt-5",
+        "choices": [{"message": {"content": '{"answer":"C"}'}}],
+    }
+    resp2 = FakeResp(200, payload2)
+    kv = (
+        "prompt_tokens=7, completion_tokens=5, total_tokens=12, cost=0.001, "
+        "completion_tokens_details.reasoning_tokens=2, prompt_tokens_details.cached_tokens=4, prompt_tokens_details.audio_tokens=0"
+    )
+    resp2.headers = {"X-Usage": kv}
+    run_dir2 = run_eval(
+        monkeypatch,
+        tmp_path,
+        dataset,
+        model_id="openai/gpt-5",
+        responses=[resp2],
+    )
+    df2 = pd.read_parquet(run_dir2 / "results.parquet", engine="pyarrow")
+    row2 = df2.iloc[0]
+    assert row2["predicted"] == "C"
+    assert row2["total_tokens"] == 12
+    assert row2["reasoning_tokens"] == 2
+    assert row2["cached_prompt_tokens"] == 4
+    assert row2["audio_prompt_tokens"] == 0
 
 
 def test_http_error_failure(monkeypatch, tmp_path):

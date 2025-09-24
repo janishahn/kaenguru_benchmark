@@ -188,7 +188,7 @@
     var tableBody = $('#results-table tbody');
     var pagination = $('#results-pagination');
     var filterForm = $('#filters-form');
-    var chipContainers = $$('.chip-select', filterForm);
+    var chipContainers = $$('.chip-select, select[data-facet]', filterForm);
     var sortBy = $('#sort-by');
     var sortDir = $('#sort-dir');
     var pageSize = $('#page-size');
@@ -279,6 +279,12 @@
       chipContainers.forEach(function(container){
         var facet = container.dataset.facet;
         var field = facetToField(facet);
+        if (container.tagName === 'SELECT'){
+          Array.from(container.options).forEach(function(option){
+            option.selected = state.filters[field].indexOf(option.value) !== -1;
+          });
+          return;
+        }
         $$('.chip-select button', container).forEach(function(button){
           var value = button.dataset.value;
           var list = state.filters[field];
@@ -326,6 +332,16 @@
 
     function attachChipHandlers(){
       chipContainers.forEach(function(container){
+        if (container.tagName === 'SELECT'){
+          container.addEventListener('change', function(){
+            var facet = container.dataset.facet;
+            var field = facetToField(facet);
+            state.filters[field] = Array.from(container.selectedOptions).map(function(option){ return option.value; });
+            state.filters.page = 1;
+            refresh();
+          });
+          return;
+        }
         container.addEventListener('click', function(event){
           var target = event.target;
           if (target.tagName !== 'BUTTON') return;
@@ -367,6 +383,7 @@
     }
 
     function refresh(){
+      renderActiveFilters();
       loadResults();
       loadAggregates();
     }
@@ -378,14 +395,24 @@
             var facet = container.dataset.facet;
             var field = facetToField(facet);
             var values = facets[facet] || [];
-            container.innerHTML = '';
-            values.forEach(function(value){
-              var btn = document.createElement('button');
-              btn.type = 'button';
-              btn.textContent = value;
-              btn.dataset.value = value;
-              container.appendChild(btn);
-            });
+            if (container.tagName === 'SELECT'){
+              container.innerHTML = '';
+              values.forEach(function(value){
+                var option = document.createElement('option');
+                option.value = value;
+                option.textContent = value;
+                container.appendChild(option);
+              });
+            } else {
+              container.innerHTML = '';
+              values.forEach(function(value){
+                var btn = document.createElement('button');
+                btn.type = 'button';
+                btn.textContent = value;
+                btn.dataset.value = value;
+                container.appendChild(btn);
+              });
+            }
           });
           attachChipHandlers();
           syncControls();
@@ -680,6 +707,25 @@
       closeRowBtn.addEventListener('click', closeDrawer);
     }
 
+    function attachSelectChange(select, key){
+      if (!select) return;
+      select.addEventListener('change', function(){
+        state.filters[key] = select.value;
+        state.filters.page = 1;
+        refresh();
+      });
+    }
+
+    function attachRangeInput(field){
+      var input = filterForm.elements[field];
+      if (!input) return;
+      input.addEventListener('change', function(){
+        state.filters[field] = input.value;
+        state.filters.page = 1;
+        refresh();
+      });
+    }
+
     filterForm.addEventListener('submit', function(event){
       event.preventDefault();
       state.filters.multimodal = filterForm.multimodal.value;
@@ -691,6 +737,11 @@
       state.filters.page = 1;
       refresh();
     });
+
+    attachSelectChange(filterForm.multimodal, 'multimodal');
+    attachSelectChange(filterForm.correctness, 'correctness');
+    attachSelectChange(filterForm.warnings_present, 'warnings_present');
+    ['points_min','points_max','latency_min','latency_max','tokens_min','tokens_max','cost_min','cost_max'].forEach(attachRangeInput);
 
     sortBy.addEventListener('change', function(){
       state.filters.sort_by = sortBy.value;

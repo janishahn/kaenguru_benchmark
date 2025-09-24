@@ -222,6 +222,9 @@ def test_answer_json_success(monkeypatch, tmp_path):
     assert metrics["failed_count"] == 0
     assert metrics["accuracy"] == 1.0
     assert metrics["unknown_usage_count"] == 0
+    assert metrics["total_reasoning_tokens"] is None
+    assert metrics["mean_reasoning_tokens"] is None
+    assert metrics["reasoning_tokens_known_count"] == 0
 
 
 def test_cot_with_reason(monkeypatch, tmp_path):
@@ -268,6 +271,9 @@ def test_regex_fallback_and_missing_usage(monkeypatch, tmp_path):
 
     metrics = json.loads((run_dir / "metrics.json").read_text())
     assert metrics["unknown_usage_count"] == 1
+    assert metrics["total_reasoning_tokens"] is None
+    assert metrics["mean_reasoning_tokens"] is None
+    assert metrics["reasoning_tokens_known_count"] == 0
 
 
 def test_list_content_response(monkeypatch, tmp_path):
@@ -336,6 +342,11 @@ def test_usage_details_in_response_json(monkeypatch, tmp_path):
     assert row["cached_prompt_tokens"] == 100
     assert row["audio_prompt_tokens"] == 0
 
+    metrics = json.loads((run_dir / "metrics.json").read_text())
+    assert metrics["total_reasoning_tokens"] == 42
+    assert metrics["mean_reasoning_tokens"] == 42
+    assert metrics["reasoning_tokens_known_count"] == 1
+
 
 def test_x_usage_header_fallback(monkeypatch, tmp_path):
     dataset = write_parquet(tmp_path, [make_row(9, with_images=False)])
@@ -374,6 +385,11 @@ def test_x_usage_header_fallback(monkeypatch, tmp_path):
     assert row["cached_prompt_tokens"] == 3
     assert row["audio_prompt_tokens"] == 1
 
+    metrics = json.loads((run_dir / "metrics.json").read_text())
+    assert metrics["total_reasoning_tokens"] == 5
+    assert metrics["mean_reasoning_tokens"] == 5
+    assert metrics["reasoning_tokens_known_count"] == 1
+
     # Now verify non-JSON key=value format also parses
     payload2 = {
         "id": "gen_hdr_usage2",
@@ -400,6 +416,11 @@ def test_x_usage_header_fallback(monkeypatch, tmp_path):
     assert row2["reasoning_tokens"] == 2
     assert row2["cached_prompt_tokens"] == 4
     assert row2["audio_prompt_tokens"] == 0
+
+    metrics2 = json.loads((run_dir2 / "metrics.json").read_text())
+    assert metrics2["total_reasoning_tokens"] == 2
+    assert metrics2["mean_reasoning_tokens"] == 2
+    assert metrics2["reasoning_tokens_known_count"] == 1
 
 
 def test_http_error_failure(monkeypatch, tmp_path):

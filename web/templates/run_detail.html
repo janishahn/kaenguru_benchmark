@@ -38,6 +38,13 @@
       <span class="summary-label">Total known cost ($)</span>
       <span class="summary-value">{{ run.metrics.total_cost_usd_known | round(3) if run.metrics.total_cost_usd_known else '–' }}</span>
     </div>
+    <div class="summary-card">
+      <span class="summary-label">Reasoning tokens</span>
+      <span class="summary-value">{{ run.metrics.total_reasoning_tokens if run.metrics.total_reasoning_tokens is not none else '–' }}</span>
+      {% if run.metrics.mean_reasoning_tokens is not none %}
+        <span class="summary-note">Mean {{ run.metrics.mean_reasoning_tokens | round(1) }} · rows {{ run.metrics.reasoning_tokens_known_count if run.metrics.reasoning_tokens_known_count is not none else 0 }}</span>
+      {% endif %}
+    </div>
   </div>
 
   <div class="detail-layout">
@@ -103,6 +110,13 @@
           <div class="range-inputs">
             <input type="number" step="1" name="tokens_min" placeholder="min" />
             <input type="number" step="1" name="tokens_max" placeholder="max" />
+          </div>
+        </div>
+        <div class="filter-group filter-group--range">
+          <label>Reasoning tokens</label>
+          <div class="range-inputs">
+            <input type="number" step="1" name="reasoning_tokens_min" placeholder="min" />
+            <input type="number" step="1" name="reasoning_tokens_max" placeholder="max" />
           </div>
         </div>
         <div class="filter-group filter-group--range">
@@ -215,6 +229,7 @@
               <th>Points earned</th>
               <th>Latency (ms)</th>
               <th>Total tokens</th>
+              <th>Reasoning tokens</th>
               <th>Cost</th>
               <th>Warnings</th>
             </tr>

@@ -1259,16 +1259,33 @@ def main():
         mean_latency = None
         median_latency = None
 
+    total_tokens_series = pd.Series(dtype="int64")
     if len(results_df.columns) > 0 and not answered_mask.empty:
         total_tokens_series = results_df.loc[answered_mask, "total_tokens"].dropna().astype(int)
         mean_tokens = float(total_tokens_series.mean()) if not total_tokens_series.empty else None
         cost_series = results_df.loc[answered_mask, "cost_usd"].dropna().astype(float)
         total_cost = float(cost_series.sum()) if not cost_series.empty else 0.0
+        if "reasoning_tokens" in results_df.columns:
+            reasoning_tokens_series = (
+                results_df.loc[answered_mask, "reasoning_tokens"].dropna().astype(int)
+            )
+        else:
+            reasoning_tokens_series = pd.Series(dtype="int64")
+        mean_reasoning_tokens = (
+            float(reasoning_tokens_series.mean()) if not reasoning_tokens_series.empty else None
+        )
+        total_reasoning_tokens = (
+            int(reasoning_tokens_series.sum()) if not reasoning_tokens_series.empty else None
+        )
+        reasoning_tokens_known_count = int(len(reasoning_tokens_series))
         unknown_usage_count = int(answered_count - len(total_tokens_series))
     else:
         mean_tokens = None
         total_cost = 0.0
         unknown_usage_count = 0
+        mean_reasoning_tokens = None
+        total_reasoning_tokens = None
+        reasoning_tokens_known_count = 0
 
     def breakdown_by(col: str) -> Dict[str, Any]:
         result: Dict[str, Any] = {}
@@ -1293,6 +1310,9 @@ def main():
         "mean_latency_ms": mean_latency,
         "median_latency_ms": median_latency,
         "mean_total_tokens": mean_tokens,
+        "mean_reasoning_tokens": mean_reasoning_tokens,
+        "total_reasoning_tokens": total_reasoning_tokens,
+        "reasoning_tokens_known_count": reasoning_tokens_known_count,
         "total_cost_usd_known": total_cost,
         "unknown_usage_count": unknown_usage_count,
         "breakdown_by_group": breakdown_by("group"),
@@ -1323,6 +1343,21 @@ def main():
         print(f"  Mean latency: {mean_latency:.1f} ms (median {median_latency:.1f} ms)")
     else:
         print("  Mean latency: n/a")
+    total_tokens_known = int(len(total_tokens_series))
+    if mean_tokens is not None:
+        print(
+            "  Total tokens: "
+            f"mean {mean_tokens:.1f}, total {int(total_tokens_series.sum()) if total_tokens_series.size else 0} (rows {total_tokens_known})"
+        )
+    else:
+        print("  Total tokens: n/a")
+    if total_reasoning_tokens is not None and mean_reasoning_tokens is not None:
+        print(
+            "  Reasoning tokens: "
+            f"mean {mean_reasoning_tokens:.1f}, total {total_reasoning_tokens} (rows {reasoning_tokens_known_count})"
+        )
+    else:
+        print("  Reasoning tokens: n/a")
     print(f"  Known total cost: ${total_cost:.4f}")
     print(f"  Unknown usage rows: {unknown_usage_count}")
     print(f"  Worker count: {worker_count}")

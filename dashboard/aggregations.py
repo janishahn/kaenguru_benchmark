@@ -61,6 +61,7 @@ def compute_aggregates(rows: Sequence[schemas.RowRecord]) -> schemas.AggregatesR
     predicted_counts: Counter[str] = Counter()
     latency_values: List[float] = []
     token_values: List[float] = []
+    reasoning_values: List[float] = []
     warning_counts: Counter[str] = Counter()
 
     for row in rows:
@@ -74,19 +75,25 @@ def compute_aggregates(rows: Sequence[schemas.RowRecord]) -> schemas.AggregatesR
             latency_values.append(float(row.latency_ms))
         if row.total_tokens is not None:
             token_values.append(float(row.total_tokens))
+        if row.reasoning_tokens is not None:
+            reasoning_values.append(float(row.reasoning_tokens))
         if row.warnings:
             warning_counts.update(w for w in row.warnings if w)
 
     latency_hist = build_histogram(latency_values)
     tokens_hist = build_histogram(token_values)
+    reasoning_hist = build_histogram(reasoning_values)
 
-    warning_toplist = [schemas.WarningBreakdown(warning_type=w, count=c) for w, c in warning_counts.most_common(10)]
+    warning_toplist = [
+        schemas.WarningBreakdown(warning_type=w, count=c) for w, c in warning_counts.most_common(10)
+    ]
     return schemas.AggregatesResponse(
         breakdown_by_group=finalize_breakdown(breakdown_group),
         breakdown_by_year=finalize_breakdown(breakdown_year),
         confusion_matrix=confusion_matrix,
         latency_hist=latency_hist,
         tokens_hist=tokens_hist,
+        reasoning_tokens_hist=reasoning_hist,
         predicted_counts=dict(predicted_counts),
         warning_toplist=warning_toplist,
     )

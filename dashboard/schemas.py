@@ -24,6 +24,9 @@ class RunMetrics(BaseModel):
     mean_latency_ms: Optional[float] = None
     median_latency_ms: Optional[float] = None
     mean_total_tokens: Optional[float] = None
+    mean_reasoning_tokens: Optional[float] = None
+    total_reasoning_tokens: Optional[int] = None
+    reasoning_tokens_known_count: Optional[int] = None
     total_cost_usd_known: Optional[float] = None
     unknown_usage_count: Optional[int] = None
     breakdown_by_group: Dict[str, BreakdownEntry] = Field(default_factory=dict)
@@ -218,6 +221,8 @@ class ResultFilterParams(BaseModel):
     latency_max: Optional[float] = None
     tokens_min: Optional[int] = None
     tokens_max: Optional[int] = None
+    reasoning_tokens_min: Optional[int] = None
+    reasoning_tokens_max: Optional[int] = None
     cost_min: Optional[float] = None
     cost_max: Optional[float] = None
     warnings_present: Optional[bool] = None
@@ -249,6 +254,8 @@ class ResultFilterParams(BaseModel):
             self.latency_max,
             self.tokens_min,
             self.tokens_max,
+            self.reasoning_tokens_min,
+            self.reasoning_tokens_max,
             self.cost_min,
             self.cost_max,
             self.warnings_present,
@@ -281,6 +288,7 @@ class AggregatesResponse(BaseModel):
     confusion_matrix: Dict[str, Dict[str, int]] = Field(default_factory=dict)
     latency_hist: Histogram = Field(default_factory=Histogram)
     tokens_hist: Histogram = Field(default_factory=Histogram)
+    reasoning_tokens_hist: Histogram = Field(default_factory=Histogram)
     predicted_counts: Dict[str, int] = Field(default_factory=dict)
     warning_toplist: List[WarningBreakdown] = Field(default_factory=list)
 

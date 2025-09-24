@@ -32,8 +32,22 @@ LIST_FIELDS = {
     "reasoning_mode",
     "warning_types",
 }
-FLOAT_FIELDS = {"points_min", "points_max", "latency_min", "latency_max", "cost_min", "cost_max"}
-INT_FIELDS = {"tokens_min", "tokens_max", "page", "page_size"}
+FLOAT_FIELDS = {
+    "points_min",
+    "points_max",
+    "latency_min",
+    "latency_max",
+    "cost_min",
+    "cost_max",
+}
+INT_FIELDS = {
+    "tokens_min",
+    "tokens_max",
+    "reasoning_tokens_min",
+    "reasoning_tokens_max",
+    "page",
+    "page_size",
+}
 BOOL_FIELDS = {"multimodal", "warnings_present"}
 
 

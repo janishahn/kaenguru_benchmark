@@ -176,6 +176,8 @@
         latency_max: '',
         tokens_min: '',
         tokens_max: '',
+        reasoning_tokens_min: '',
+        reasoning_tokens_max: '',
         cost_min: '',
         cost_max: '',
         page: 1,
@@ -298,7 +300,7 @@
       filterForm.multimodal.value = state.filters.multimodal;
       filterForm.correctness.value = state.filters.correctness;
       filterForm.warnings_present.value = state.filters.warnings_present;
-      ['points_min','points_max','latency_min','latency_max','tokens_min','tokens_max','cost_min','cost_max'].forEach(function(field){
+      ['points_min','points_max','latency_min','latency_max','tokens_min','tokens_max','reasoning_tokens_min','reasoning_tokens_max','cost_min','cost_max'].forEach(function(field){
         filterForm.elements[field].value = state.filters[field];
       });
       sortBy.value = state.filters.sort_by;
@@ -320,7 +322,7 @@
           items.push(key + ': ' + state.filters[key]);
         }
       });
-      ['points','latency','tokens','cost'].forEach(function(prefix){
+      ['points','latency','tokens','reasoning_tokens','cost'].forEach(function(prefix){
         var minKey = prefix + '_min';
         var maxKey = prefix + '_max';
         if (state.filters[minKey] || state.filters[maxKey]){
@@ -436,7 +438,7 @@
       if (!items.length){
         var empty = document.createElement('tr');
         var cell = document.createElement('td');
-        cell.colSpan = 13;
+        cell.colSpan = 14;
         cell.textContent = 'No rows match the current filters.';
         empty.appendChild(cell);
         tableBody.appendChild(empty);
@@ -456,6 +458,7 @@
           row.points_earned ?? '–',
           row.latency_ms ? row.latency_ms.toFixed(1) : '–',
           row.total_tokens ?? '–',
+          row.reasoning_tokens ?? '–',
           row.cost_usd ? row.cost_usd.toFixed(4) : '–',
           row.warnings && row.warnings.length ? '⚠ ' + row.warnings.length : '–'
         ].map(function(value){ return '<td>' + value + '</td>'; }).join('');
@@ -625,6 +628,7 @@
         '<strong>Predicted:</strong> ' + (row.predicted || '–'),
         '<strong>Latency:</strong> ' + (row.latency_ms ? row.latency_ms.toFixed(1) + ' ms' : '–'),
         '<strong>Total tokens:</strong> ' + (row.total_tokens ?? '–'),
+        '<strong>Reasoning tokens:</strong> ' + (row.reasoning_tokens ?? '–'),
         '<strong>Cost:</strong> ' + (row.cost_usd ? row.cost_usd.toFixed(4) : '–'),
         row.warnings && row.warnings.length ? '<strong>Warnings:</strong> ' + row.warnings.join(', ') : ''
       ].filter(Boolean).map(function(line){ return '<p>' + line + '</p>'; }).join('');

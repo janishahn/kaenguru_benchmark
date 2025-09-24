@@ -384,6 +384,8 @@ class RunIndex:
             return False
         if not self._within_bounds(row.total_tokens, filters.tokens_min, filters.tokens_max):
             return False
+        if not self._within_bounds(row.reasoning_tokens, filters.reasoning_tokens_min, filters.reasoning_tokens_max):
+            return False
         if not self._within_bounds(row.cost_usd, filters.cost_min, filters.cost_max):
             return False
         if filters.warnings_present is not None:
@@ -434,6 +436,7 @@ class RunIndex:
             "is_correct": lambda r: 1 if r.is_correct else 0,
             "latency_ms": lambda r: r.latency_ms or 0.0,
             "total_tokens": lambda r: r.total_tokens or 0,
+            "reasoning_tokens": lambda r: r.reasoning_tokens or 0,
             "cost_usd": lambda r: r.cost_usd or 0.0,
             "points_earned": lambda r: r.points_earned or 0.0,
         }

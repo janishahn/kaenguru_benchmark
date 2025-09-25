@@ -1284,6 +1284,9 @@ async def evaluate_rows_async(
 
 
 def main():
+    import time
+    start_time = time.time()  # Track start time for total run time
+    
     parser = argparse.ArgumentParser(description="LLM evaluation runner for Känguru benchmark")
     parser.add_argument("--dataset", required=True, help="Path to dataset .parquet")
     parser.add_argument("--model", required=True, help="Model ID from models.json")
@@ -1419,6 +1422,8 @@ def main():
     if avg_points is not None:
         print(f"  Avg points: {avg_points:.2f}")
     print(f"  Year distribution: {year_desc}")
+    # Add proper spacing after pre-run summary to separate from dashboard
+    print()
 
     with open(results_jsonl_path, "w", encoding="utf-8") as results_jsonl, \
         open(raw_responses_path, "w", encoding="utf-8") as raw_responses_file, \
@@ -1561,6 +1566,8 @@ def main():
     with open(os.path.join(run_dir, "config.json"), "w", encoding="utf-8") as f:
         json.dump(config, f, ensure_ascii=False, indent=2)
 
+    # Add proper spacing before post-run summary to avoid cramped appearance
+    print()
     print("Summary:")
     print(f"  Answered: {answered_count}")
     print(f"  Skipped: {skipped_count}")
@@ -1589,7 +1596,18 @@ def main():
     print(f"  Known total cost: ${total_cost:.4f}")
     print(f"  Unknown usage rows: {unknown_usage_count}")
     print(f"  Worker count: {worker_count}")
-
+    
+    # Calculate and display total runtime
+    end_time = time.time()
+    total_runtime = end_time - start_time
+    hours, rem = divmod(int(total_runtime), 3600)
+    minutes, seconds = divmod(rem, 60)
+    if hours > 0:
+        runtime_str = f"{hours:02d}:{minutes:02d}:{seconds:02d}"
+    else:
+        runtime_str = f"{minutes:02d}:{seconds:02d}"
+    
+    print(f"  Total runtime: {runtime_str}")
 
 
 if __name__ == "__main__":

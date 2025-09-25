@@ -73,17 +73,17 @@ class Dashboard:
         )
         self._task_id = self._progress.add_task("Progress", total=self.aggregator.total_items)
 
-        min_top = 4 if self._compact_mode else 6
-        min_mid = 3
+        # Reduce minimum sizes to make dashboard more compact
+        min_top = 3 if self._compact_mode else 4
+        min_mid = 2
         min_bottom = 1
-        root_height = min_top + min_mid + min_bottom
-
-        layout = Layout(name="root", size=root_height)
+        # Don't set a fixed size on the root layout - let it adapt to terminal space
+        layout = Layout(name="root")
 
         layout.split_column(
-            Layout(name="row_top", ratio=2, minimum_size=min_top),
-            Layout(name="row_mid", ratio=3, minimum_size=min_mid),
-            Layout(name="row_bottom", ratio=1, minimum_size=min_bottom),
+            Layout(name="row_top", minimum_size=min_top, ratio=3),
+            Layout(name="row_mid", minimum_size=min_mid, ratio=2),
+            Layout(name="row_bottom", minimum_size=min_bottom, ratio=1),
         )
 
         top_children = [Layout(name="overview")]
@@ -107,8 +107,8 @@ class Dashboard:
             refresh_per_second=self.refresh_hz,
             transient=False,
             auto_refresh=False,
-            vertical_overflow="crop",
-            screen=False,
+            vertical_overflow="ellipsis",
+            screen=True,
         )
         self._live.__enter__()
 
@@ -160,12 +160,19 @@ class Dashboard:
     def _render_overview(self, snapshot: DashboardSnapshot, cost_projection: Optional[CostProjection]) -> Panel:
         table = Table.grid(expand=True)
         pct = (snapshot.completed_items / snapshot.total_items * 100.0) if snapshot.total_items else 0.0
+        
+        # Format elapsed time
+        elapsed_str = self._format_elapsed_time(snapshot.elapsed_time_seconds)
+        
         table.add_row(
             Text(f"Done {snapshot.completed_items}/{snapshot.total_items} ({pct:.1f}%)", style="bold"),
-            Text(f"In-flight: {snapshot.in_flight}", style="cyan"),
+            Text(f"Elapsed: {elapsed_str}", style="green"),
         )
         table.add_row(
+            Text(f"In-flight: {snapshot.in_flight}", style="cyan"),
             Text(f"Concurrency: {snapshot.worker_count}", style="cyan"),
+        )
+        table.add_row(
             Text(f"ETA: {self._format_eta(snapshot)}", style="magenta"),
         )
         if not self._show_cost_panel and cost_projection is not None:
@@ -184,6 +191,17 @@ class Dashboard:
                 Text(f"Mean/Q: {mean_str}", style="cyan"),
             )
         return Panel(table, title="Overview", padding=(0, 1))
+
+    def _format_elapsed_time(self, elapsed_seconds: Optional[float]) -> str:
+        if elapsed_seconds is None:
+            return "--:--:--"
+        elapsed_seconds = int(round(elapsed_seconds))
+        hours, rem = divmod(elapsed_seconds, 3600)
+        minutes, seconds = divmod(rem, 60)
+        if hours > 0:
+            return f"{hours:02d}:{minutes:02d}:{seconds:02d}"
+        else:
+            return f"{minutes:02d}:{seconds:02d}"
 
     def _render_cost(self, snapshot: DashboardSnapshot) -> Panel:
         table = Table.grid(expand=True)

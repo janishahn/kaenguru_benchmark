@@ -103,6 +103,7 @@ class DashboardSnapshot:
     min_request_interval: Optional[float]
     cost_projection: Optional[CostProjection]
     recent_items: List[RecentItem]
+    elapsed_time_seconds: Optional[float] = None
 
 
 class Aggregator:
@@ -121,6 +122,7 @@ class Aggregator:
         self._recent_capacity = max(5, recent_items)
         self._min_request_interval = min_request_interval
 
+        self._start_time = time.time()
         self._lock = Lock()
 
         self._success = 0
@@ -352,6 +354,8 @@ class Aggregator:
 
     def snapshot(self, *, in_flight: int, worker_count: int) -> DashboardSnapshot:
         with self._lock:
+            current_time = time.time()
+            elapsed_time = current_time - self._start_time
             eta = self.project_eta(worker_count=worker_count)
             remaining = max(self.total_items - self._completed, 0)
             mean_tokens = self._mean_tokens()
@@ -360,7 +364,7 @@ class Aggregator:
             mean_latency = (self._latency_sum / self._latency_count) if self._latency_count else None
             mean_attempts = (self._attempts_sum / self._completed) if self._completed else None
             snapshot = DashboardSnapshot(
-                timestamp=time.time(),
+                timestamp=current_time,
                 total_items=self.total_items,
                 completed_items=self._completed,
                 success=self._success,
@@ -389,6 +393,7 @@ class Aggregator:
                 min_request_interval=self._min_request_interval,
                 cost_projection=cost_projection,
                 recent_items=list(self._recent),
+                elapsed_time_seconds=elapsed_time,
             )
             return snapshot
 

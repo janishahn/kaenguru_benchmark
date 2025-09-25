@@ -67,10 +67,10 @@
       "supports_json_response_format": true
     },
     {
-      "id": "qwen/qwen2.5-vl-72b-instruct",
-      "label": "Qwen 2.5 VL 72B Instruct",
+      "id": "qwen/qwen3-vl-235b-a22b-instruct",
+      "label": "Qwen 3 VL 235B A22B Instruct",
       "supports_vision": true,
-      "supports_json_response_format": true
+      "supports_json_response_format": false
     },
     {
       "id": "qwen/qwen3-vl-235b-a22b-thinking",

@@ -291,32 +291,40 @@ class Aggregator:
         if self._items_with_cost > 0:
             mean_cost_per_item = self._cost_known_total / float(self._items_with_cost)
 
-        completed_estimate_missing = 0.0
-        if self._items_without_cost > 0:
-            if mean_cost_per_token is not None and self._tokens_without_cost > 0:
-                completed_estimate_missing = mean_cost_per_token * self._tokens_without_cost
-            elif mean_cost_per_item is not None:
-                completed_estimate_missing = mean_cost_per_item * self._items_without_cost
+        projected_total = None
+        # Estimate based on total items and mean cost per item
+        if mean_cost_per_item is not None:
+            projected_total = mean_cost_per_item * self.total_items
 
-        remaining_estimate = None
-        if remaining_items > 0:
-            if mean_cost_per_token is not None and tokens_left is not None:
-                remaining_estimate = mean_cost_per_token * tokens_left
-            elif mean_cost_per_item is not None:
-                remaining_estimate = mean_cost_per_item * remaining_items
+        # Refine projection with token-based estimate if available
+        if mean_cost_per_token is not None:
+            # Estimate cost for items that have already completed
+            cost_of_completed = self._cost_known_total
+            if self._tokens_without_cost > 0 and mean_cost_per_token is not None:
+                cost_of_completed += self._tokens_without_cost * mean_cost_per_token
 
-        projected_total = self._cost_known_total + completed_estimate_missing
-        if remaining_estimate is not None:
-            projected_total += remaining_estimate
+            # Estimate cost for remaining items
+            cost_of_remaining = 0.0
+            if remaining_items > 0:
+                if tokens_left is not None:
+                    cost_of_remaining = tokens_left * mean_cost_per_token
+                elif self._mean_tokens() is not None:
+                    cost_of_remaining = remaining_items * self._mean_tokens() * mean_cost_per_token
 
-        if remaining_estimate is None and completed_estimate_missing == 0.0:
-            projected_low = None
-            projected_high = None
-        else:
-            base = remaining_estimate if remaining_estimate is not None else completed_estimate_missing
-            band = max((base or 0.0) * 0.15, 0.01)
+            projected_total = cost_of_completed + cost_of_remaining
+
+        # Fallback if no projections could be made
+        if projected_total is None:
+            projected_total = self._cost_known_total
+
+        # Confidence bands
+        if projected_total > self._cost_known_total:
+            band = max(projected_total * 0.1, 0.01)
             projected_low = max(self._cost_known_total, projected_total - band)
             projected_high = projected_total + band
+        else:
+            projected_low = None
+            projected_high = None
 
         confidence = "low"
         if self._items_with_cost >= 20:

@@ -91,6 +91,12 @@ class SmartEta:
         token_rate = self._token_rate()
         capped = False
 
+        if worker_count > 1:
+            if token_rate is not None:
+                token_rate *= worker_count
+            if request_rate is not None:
+                request_rate *= worker_count
+
         if min_request_interval and min_request_interval > 0 and worker_count > 0:
             req_limit = worker_count / max(min_request_interval, 1e-6)
             if request_rate is None or request_rate <= 0:
@@ -115,8 +121,8 @@ class SmartEta:
 
         eta_seconds = None
         if eta_from_tokens is not None and eta_from_items is not None:
-            # Take the conservative max so we never under-estimate aggressively
-            eta_seconds = max(eta_from_tokens, eta_from_items)
+            # Weighted average, giving more weight to token-based estimate
+            eta_seconds = 0.8 * eta_from_tokens + 0.2 * eta_from_items
         elif eta_from_tokens is not None:
             eta_seconds = eta_from_tokens
         elif eta_from_items is not None:
@@ -135,28 +141,17 @@ class SmartEta:
         )
 
     def _token_rate(self) -> Optional[float]:
-        if self._token_rate_ema is not None:
-            return self._token_rate_ema
-        if not self._token_rates:
-            return None
-        return sum(self._token_rates) / len(self._token_rates)
+        return self._token_rate_ema
 
     def _request_rate(self) -> Optional[float]:
-        if self._req_rate_ema is not None:
-            return self._req_rate_ema
-        if not self._req_intervals:
-            return None
-        avg_interval = sum(self._req_intervals) / len(self._req_intervals)
-        if avg_interval <= 0:
-            return None
-        return 1.0 / avg_interval
+        return self._req_rate_ema
 
     def _confidence(self, remaining_items: int) -> str:
-        if self._samples < 5:
+        if self._samples < 10:
             return "low"
-        if self._samples < 15 or (self._mad is not None and self._median is not None and self._mad > 0.6 * self._median):
+        if self._samples < 30 or (self._mad is not None and self._median is not None and self._mad > 0.4 * self._median):
             return "medium"
-        if remaining_items < 5:
+        if remaining_items < 10:
             return "high"
         return "high"
 

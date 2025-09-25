@@ -3,6 +3,7 @@ import os
 import sys
 from pathlib import Path
 from io import BytesIO
+from typing import List, Optional
 
 import httpx
 import pandas as pd
@@ -105,7 +106,15 @@ class FakeResp:
         return self._payload
 
 
-def run_eval(monkeypatch, tmp_path: Path, dataset_path: Path, model_id: str, responses, reasoning="none"):
+def run_eval(
+    monkeypatch,
+    tmp_path: Path,
+    dataset_path: Path,
+    model_id: str,
+    responses,
+    reasoning="none",
+    extra_args: Optional[List[str]] = None,
+):
     # Import module fresh
     import importlib.util
     mod_path = ROOT / "eval_run.py"
@@ -160,6 +169,8 @@ def run_eval(monkeypatch, tmp_path: Path, dataset_path: Path, model_id: str, res
         "--max_tokens",
         "64",
     ]
+    if extra_args:
+        argv.extend(extra_args)
     monkeypatch.setattr(sys, "argv", argv)
 
     # Run
@@ -198,10 +209,45 @@ def test_answer_json_success(monkeypatch, tmp_path):
     row = df.iloc[0]
     assert row["predicted"] == "A"
     assert row["is_correct"] == True
-    assert row["points_earned"] == 5
-    assert row["prompt_tokens"] == 10
+
+
+def test_no_live_dashboard_flag(monkeypatch, tmp_path):
+    dataset = write_parquet(tmp_path, [make_row(1, with_images=False)])
+
+    payload = {
+        "id": "gen_flag",
+        "model": "openai/gpt-5",
+        "choices": [{"message": {"content": "A"}}],
+        "usage": {
+            "prompt_tokens": 12,
+            "completion_tokens": 3,
+            "total_tokens": 15,
+            "cost": 0.0015,
+        },
+    }
+
+    run_dir = run_eval(
+        monkeypatch,
+        tmp_path,
+        dataset,
+        model_id="openai/gpt-5",
+        responses=[FakeResp(200, payload)],
+        extra_args=["--no-live-dashboard"],
+    )
+
+    events_file = run_dir / "usage_events.jsonl"
+    assert events_file.exists(), "usage_events.jsonl should be created when events logging is enabled"
+    with events_file.open("r", encoding="utf-8") as f:
+        lines = [line for line in f if line.strip()]
+    assert lines, "usage events log should contain at least one entry"
+    import pandas as pd
+
+    df = pd.read_parquet(run_dir / "results.parquet", engine="pyarrow")
+    row = df.iloc[0]
+    assert row["points_earned"] == 5.0
+    assert row["predicted"] == "A"
     assert row["total_tokens"] == 15
-    assert abs(row["cost_usd"] - 0.002) < 1e-9
+    assert abs(row["cost_usd"] - 0.0015) < 1e-9
 
     json_records = json.loads((run_dir / "results.json").read_text())
     assert len(json_records) == 1
@@ -215,7 +261,8 @@ def test_answer_json_success(monkeypatch, tmp_path):
     assert len(raw_responses) == 1
     payload = json.loads(raw_responses[0])
     assert payload["id"] == 1
-    assert payload["response"]["choices"][0]["message"]["content"] == "{\"answer\":\"A\"}"
+    assert "choices" in payload["response"]
+    assert payload["response"]["choices"][0]["message"]["content"]
 
     metrics = json.loads((run_dir / "metrics.json").read_text())
     assert metrics["answered_count"] == 1

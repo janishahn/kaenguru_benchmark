@@ -11,12 +11,23 @@ import time
 from dataclasses import dataclass, asdict
 from datetime import datetime
 from io import BytesIO
-from typing import Any, Dict, List, Optional, Tuple
+from pathlib import Path
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import httpx
 import pandas as pd
 from PIL import Image
 from tqdm import tqdm
+
+from console.metrics import Aggregator, UsageEvent
+
+try:
+    from console.dashboard import Dashboard
+
+    DASHBOARD_AVAILABLE = True
+except Exception:  # pragma: no cover - rich not installed
+    Dashboard = None  # type: ignore
+    DASHBOARD_AVAILABLE = False
 
 
 REQUIRED_COLUMNS = [
@@ -84,11 +95,11 @@ class RowRecord:
     reasoning_tokens: Optional[int] = None
     cached_prompt_tokens: Optional[int] = None
     audio_prompt_tokens: Optional[int] = None
-    cost_usd: Optional[float]
-    rationale: Optional[str]
-    raw_text_response: Optional[str]
-    generation_id: Optional[str]
-    error: Optional[str]
+    cost_usd: Optional[float] = None
+    rationale: Optional[str] = None
+    raw_text_response: Optional[str] = None
+    generation_id: Optional[str] = None
+    error: Optional[str] = None
     warnings: Optional[List[str]] = None
 
 
@@ -99,6 +110,9 @@ class WorkerOutcome:
     failure_entry: Optional[Dict[str, Any]]
     skipped: bool
     fail_fast_trigger: bool
+    attempts: int = 1
+    status_code: Optional[int] = None
+    row_id: Optional[Any] = None
 
 
 class AdaptiveRateLimiter:
@@ -537,6 +551,8 @@ async def request_with_retries(
     url: str,
     headers: Dict[str, str],
     payload: Dict[str, Any],
+    on_status: Optional[Callable[[int], None]] = None,
+    on_throttle: Optional[Callable[[], None]] = None,
 ) -> Tuple[httpx.Response, float]:
     delays = [0.5, 1.0, 2.0]
     last_exc: Optional[Exception] = None
@@ -552,7 +568,18 @@ async def request_with_retries(
                 continue
             raise
 
+        if on_status is not None:
+            try:
+                on_status(resp.status_code)
+            except Exception:
+                pass
+
         if resp.status_code in (429, 500, 502, 503, 504):
+            if on_throttle is not None:
+                try:
+                    on_throttle()
+                except Exception:
+                    pass
             await limiter.record_throttle()
             if attempt < len(delays):
                 await asyncio.sleep(delays[attempt])
@@ -617,6 +644,7 @@ async def evaluate_single_row(
     limiter: AdaptiveRateLimiter,
     url: str,
     headers: Dict[str, str],
+    metrics: Optional[Aggregator] = None,
 ) -> WorkerOutcome:
     warnings: List[str] = []
     raw_entries: List[Dict[str, Any]] = []
@@ -627,7 +655,16 @@ async def evaluate_single_row(
 
     has_images = bool(q_bytes or any(opt_bytes.values()) or assoc_bytes)
     if has_images and not model_info.supports_vision:
-        return WorkerOutcome(record=None, raw_entries=[], failure_entry=None, skipped=True, fail_fast_trigger=False)
+        return WorkerOutcome(
+            record=None,
+            raw_entries=[],
+            failure_entry=None,
+            skipped=True,
+            fail_fast_trigger=False,
+            attempts=0,
+            status_code=None,
+            row_id=row.get("id"),
+        )
 
     encoded_images: Dict[str, Any] = {"assoc_list": []}
     if model_info.supports_vision:
@@ -695,6 +732,7 @@ async def evaluate_single_row(
     combined_usage_details: Dict[str, float] = {}  # reasoning_tokens, cached_prompt_tokens, audio_prompt_tokens
     last_usage: Optional[Dict[str, Any]] = None
     latencies: List[float] = []
+    last_status_code: Optional[int] = None
     ans: Optional[str] = None
     rat: Optional[str] = None
     parse_warn: Optional[str] = None
@@ -711,8 +749,17 @@ async def evaluate_single_row(
             payload.pop("max_tokens", None)
 
         try:
-            resp, latency_ms = await request_with_retries(client, limiter, url, headers, payload)
+            resp, latency_ms = await request_with_retries(
+                client,
+                limiter,
+                url,
+                headers,
+                payload,
+                on_status=(metrics.record_status if metrics else None),
+                on_throttle=(metrics.record_throttle if metrics else None),
+            )
             latencies.append(latency_ms)
+            last_status_code = resp.status_code
         except Exception as exc:
             err_msg = f"request_failed: {exc}"
             failure_entry = {"id": row.get("id"), "error": err_msg}
@@ -723,6 +770,9 @@ async def evaluate_single_row(
                 failure_entry=failure_entry,
                 skipped=False,
                 fail_fast_trigger=args.fail_fast,
+                attempts=attempt,
+                status_code=None,
+                row_id=row.get("id"),
             )
 
         if resp.status_code != 200:
@@ -758,6 +808,9 @@ async def evaluate_single_row(
                 failure_entry=failure_entry,
                 skipped=False,
                 fail_fast_trigger=args.fail_fast,
+                attempts=attempt,
+                status_code=resp.status_code,
+                row_id=row.get("id"),
             )
 
         try:
@@ -974,13 +1027,21 @@ async def evaluate_single_row(
                 cost_usd = None
         # Details (single-attempt fallback)
         try:
-            pd = last_usage.get("prompt_tokens_details") or {}
-            if isinstance(pd, dict):
-                cached_prompt_tokens = pd.get("cached_tokens") if isinstance(pd.get("cached_tokens"), int) else cached_prompt_tokens
-                audio_prompt_tokens = pd.get("audio_tokens") if isinstance(pd.get("audio_tokens"), int) else audio_prompt_tokens
-            cd = last_usage.get("completion_tokens_details") or {}
-            if isinstance(cd, dict):
-                reasoning_tokens = cd.get("reasoning_tokens") if isinstance(cd.get("reasoning_tokens"), int) else reasoning_tokens
+            prompt_details_map = last_usage.get("prompt_tokens_details") or {}
+            if isinstance(prompt_details_map, dict):
+                cached_prompt_tokens = (
+                    prompt_details_map.get("cached_tokens") if isinstance(prompt_details_map.get("cached_tokens"), int) else cached_prompt_tokens
+                )
+                audio_prompt_tokens = (
+                    prompt_details_map.get("audio_tokens") if isinstance(prompt_details_map.get("audio_tokens"), int) else audio_prompt_tokens
+                )
+            completion_details_map = last_usage.get("completion_tokens_details") or {}
+            if isinstance(completion_details_map, dict):
+                reasoning_tokens = (
+                    completion_details_map.get("reasoning_tokens")
+                    if isinstance(completion_details_map.get("reasoning_tokens"), int)
+                    else reasoning_tokens
+                )
         except Exception:
             pass
 
@@ -1018,6 +1079,9 @@ async def evaluate_single_row(
         failure_entry=None,
         skipped=False,
         fail_fast_trigger=False,
+        attempts=attempt,
+        status_code=last_status_code or 200,
+        row_id=row.get("id"),
     )
 
 
@@ -1031,6 +1095,12 @@ async def evaluate_rows_async(
     raw_responses_file,
     failures_file,
     worker_count: int,
+    *,
+    dashboard_enabled: bool,
+    dashboard_refresh_hz: float,
+    dashboard_recent: int,
+    dashboard_compact: bool,
+    events_path: Optional[Path],
 ) -> Tuple[List[RowRecord], List[Dict[str, Any]], int]:
     rows: List[RowRecord] = []
     results_records: List[Dict[str, Any]] = []
@@ -1041,9 +1111,103 @@ async def evaluate_rows_async(
     result_queue: asyncio.Queue[Optional[WorkerOutcome]] = asyncio.Queue()
     stop_event = asyncio.Event()
 
-    progress = tqdm(total=len(rows_data), desc="Evaluating", unit="q")
+    inflight_lock = asyncio.Lock()
+    active_inflight = 0
+
+    aggregator = Aggregator(
+        len(rows_data),
+        model_id=model_info.id,
+        events_path=events_path,
+        recent_items=dashboard_recent,
+        min_request_interval=model_info.min_request_interval,
+    )
+
+    dashboard = None
+    progress: Optional[tqdm] = None
+    if dashboard_enabled and DASHBOARD_AVAILABLE and Dashboard is not None:
+        dashboard = Dashboard(
+            aggregator,
+            refresh_hz=dashboard_refresh_hz,
+            compact=dashboard_compact,
+            recent_rows=dashboard_recent,
+        )
+        dashboard.start()
+        dashboard.update(aggregator.snapshot(in_flight=0, worker_count=worker_count))
+    else:
+        progress = tqdm(total=len(rows_data), desc="Evaluating", unit="q")
+
+    def build_usage_event(outcome: WorkerOutcome) -> UsageEvent:
+        record = outcome.record
+
+        def as_int(value: Any) -> Optional[int]:
+            if value is None:
+                return None
+            try:
+                if pd.isna(value):  # type: ignore[arg-type]
+                    return None
+            except Exception:
+                pass
+            try:
+                return int(value)
+            except Exception:
+                return None
+
+        def as_float(value: Any) -> Optional[float]:
+            if value is None:
+                return None
+            try:
+                if pd.isna(value):  # type: ignore[arg-type]
+                    return None
+            except Exception:
+                pass
+            try:
+                return float(value)
+            except Exception:
+                return None
+
+        event_type = "skipped"
+        if not outcome.skipped:
+            if record is not None and record.error:
+                event_type = "failure"
+            else:
+                event_type = "success"
+
+        group_value: Optional[str] = None
+        multimodal_value: Optional[bool] = None
+        if record is not None:
+            if record.group is not None and record.group != "":
+                group_value = str(record.group)
+            if isinstance(record.multimodal, bool):
+                multimodal_value = record.multimodal
+            elif record.multimodal is not None:
+                multimodal_value = bool(record.multimodal)
+
+        event = UsageEvent(
+            type=event_type,
+            row_id=(record.id if record is not None else outcome.row_id),
+            year=as_int(record.year) if record is not None else None,
+            group=group_value,
+            points=as_float(record.points) if record is not None else None,
+            problem_number=as_int(record.problem_number) if record is not None else None,
+            multimodal=multimodal_value,
+            latency_ms=record.latency_ms if record is not None else None,
+            attempts=outcome.attempts or 1,
+            prompt_tokens=record.prompt_tokens if record is not None else None,
+            completion_tokens=record.completion_tokens if record is not None else None,
+            total_tokens=record.total_tokens if record is not None else None,
+            reasoning_tokens=getattr(record, "reasoning_tokens", None) if record is not None else None,
+            cached_prompt_tokens=getattr(record, "cached_prompt_tokens", None) if record is not None else None,
+            audio_prompt_tokens=getattr(record, "audio_prompt_tokens", None) if record is not None else None,
+            cost_usd_known=record.cost_usd if record is not None else None,
+            predicted=record.predicted if record is not None else None,
+            correct=record.is_correct if record is not None else None,
+            status_code=outcome.status_code,
+            warnings=record.warnings if record is not None else None,
+        )
+        return event
 
     async def worker(client: httpx.AsyncClient) -> None:
+        nonlocal active_inflight
         while True:
             item = await work_queue.get()
             if item is None:
@@ -1052,8 +1216,12 @@ async def evaluate_rows_async(
             if args.fail_fast and stop_event.is_set():
                 work_queue.task_done()
                 continue
-            outcome = await evaluate_single_row(item, args, model_info, client, limiter, url, headers)
+            async with inflight_lock:
+                active_inflight += 1
+            outcome = await evaluate_single_row(item, args, model_info, client, limiter, url, headers, metrics=aggregator)
             await result_queue.put(outcome)
+            async with inflight_lock:
+                active_inflight = max(0, active_inflight - 1)
             work_queue.task_done()
             if args.fail_fast and outcome.fail_fast_trigger:
                 stop_event.set()
@@ -1076,7 +1244,16 @@ async def evaluate_rows_async(
                 record_dict = asdict(outcome.record)
                 results_records.append(record_dict)
                 write_jsonl_line(results_jsonl, record_dict)
-            progress.update(1)
+            event = build_usage_event(outcome)
+            aggregator.record_event(event)
+            if dashboard is not None:
+                async with inflight_lock:
+                    inflight_current = active_inflight
+                snapshot = aggregator.snapshot(in_flight=inflight_current, worker_count=worker_count)
+                dashboard.update(snapshot)
+            else:
+                if progress is not None:
+                    progress.update(1)
             result_queue.task_done()
 
     limits = httpx.Limits(max_connections=max(4, worker_count * 2), max_keepalive_connections=max(2, worker_count))
@@ -1096,7 +1273,11 @@ async def evaluate_rows_async(
             await result_queue.put(None)
             await consumer_task
     finally:
-        progress.close()
+        if dashboard is not None:
+            dashboard.stop()
+        if progress is not None:
+            progress.close()
+        aggregator.close()
 
     return rows, results_records, skipped
 
@@ -1119,11 +1300,36 @@ def main():
     )
     parser.add_argument("--output_dir", default="runs")
     parser.add_argument("--fail_fast", action="store_true")
+    parser.add_argument("--live-dashboard", dest="live_dashboard", action="store_true", help="Force enable the Rich dashboard even on non-tty outputs.")
+    parser.add_argument("--no-live-dashboard", dest="live_dashboard", action="store_false", help="Disable the Rich dashboard even on ttys.")
+    parser.set_defaults(live_dashboard=None)
+    parser.add_argument("--dashboard-refresh-hz", type=float, default=5.0, help="Refresh rate for the live dashboard (updates per second).")
+    parser.add_argument("--events-jsonl", default="auto", help="Path to usage events JSONL log ('off' to disable, default auto).")
+    parser.add_argument("--no-events-jsonl", dest="events_jsonl", action="store_const", const="off", help="Disable usage events capture.")
+    parser.add_argument("--recent-items", type=int, default=20, help="Number of recent items to show in the dashboard table.")
+    parser.add_argument("--ui-compact", action="store_true", help="Use compact dashboard layout suitable for smaller terminals.")
     # Image controls for multimodal inputs
     parser.add_argument("--image_max_dim", type=int, default=1024, help="Max image dimension (long edge) in pixels; no upscaling")
     parser.add_argument("--image_jpeg_quality", type=int, default=85, help="JPEG quality (50–100)")
     parser.add_argument("--image_detail", choices=["auto", "low", "high"], default="auto", help="Vision detail hint for providers that support it")
     args = parser.parse_args()
+
+    stdout_isatty = sys.stdout.isatty()
+    if args.live_dashboard is True:
+        dashboard_enabled = True
+    elif args.live_dashboard is False:
+        dashboard_enabled = False
+    else:
+        dashboard_enabled = stdout_isatty
+    if dashboard_enabled and not DASHBOARD_AVAILABLE:
+        print("Rich dashboard unavailable; falling back to tqdm progress bar.", file=sys.stderr)
+        dashboard_enabled = False
+    dashboard_refresh = max(1.0, float(args.dashboard_refresh_hz or 5.0))
+    dashboard_recent = max(5, int(args.recent_items or 20))
+    events_config = args.events_jsonl or "auto"
+
+    if dashboard_enabled and not stdout_isatty:
+        print("Warning: live dashboard forced on a non-TTY output; layout may degrade.", file=sys.stderr)
 
     load_env_file()
 
@@ -1145,6 +1351,18 @@ def main():
         sys.exit(2)
 
     run_dir, ts = ensure_output_dir(args.output_dir, args.model)
+
+    events_path: Optional[Path]
+    if isinstance(events_config, str):
+        cfg = events_config.strip().lower()
+    else:
+        cfg = "auto"
+    if cfg == "off":
+        events_path = None
+    elif cfg in {"", "auto"}:
+        events_path = Path(run_dir) / "usage_events.jsonl"
+    else:
+        events_path = Path(events_config).expanduser()
 
     df = pd.read_parquet(dataset_path, engine="pyarrow")
     validate_dataset_columns(df)
@@ -1192,6 +1410,11 @@ def main():
     print(f"  Multimodal rows: {multimodal_count} ({multimodal_count/len(rows_data)*100:.1f}% )" if rows_data else "  Multimodal rows: 0")
     print(f"  Mode: {'sequential' if worker_count == 1 else f'concurrent x{worker_count}'}")
     print(f"  Rate limiter: {limiter_desc}")
+    print(f"  Live dashboard: {'on' if dashboard_enabled else 'off'}")
+    if events_path is not None:
+        print(f"  Usage events: {str(events_path)}")
+    else:
+        print("  Usage events: disabled")
     print(f"  Reasoning: {args.reasoning}")
     if avg_points is not None:
         print(f"  Avg points: {avg_points:.2f}")
@@ -1212,6 +1435,11 @@ def main():
                 raw_responses_file,
                 failures_file,
                 worker_count,
+                dashboard_enabled=dashboard_enabled,
+                dashboard_refresh_hz=dashboard_refresh,
+                dashboard_recent=dashboard_recent,
+                dashboard_compact=bool(args.ui_compact),
+                events_path=events_path,
             )
         )
 

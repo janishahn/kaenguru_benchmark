@@ -13,6 +13,12 @@
       "supports_json_response_format": true
     },
     {
+      "id": "openai/gpt-5-nano",
+      "label": "OpenAI GPT 5 Nano",
+      "supports_vision": true,
+      "supports_json_response_format": true
+    },
+    {
       "id": "openai/gpt-oss-120b",
       "label": "OpenAI GPT OSS 120B",
       "supports_vision": false,

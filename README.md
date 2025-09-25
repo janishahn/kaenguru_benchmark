@@ -19,6 +19,7 @@ Input Data
 - Pass the path via `--dataset`; relative paths are resolved from the current working directory and `~` is supported.
 - The script validates that the supplied file exists and has a `.parquet` extension before starting the run.
 - Hard-required columns in the dataset (must all be present, values may be `null`/`None`): `id`, `year`, `group`, `points`, `problem_number`, `problem_statement`, `answer`, `multimodal`, `sol_A`, `sol_B`, `sol_C`, `sol_D`, `sol_E`, `question_image`, `sol_A_image_bin`, `sol_B_image_bin`, `sol_C_image_bin`, `sol_D_image_bin`, `sol_E_image_bin`, `associated_images_bin`, `language`.
+- For the "Performance by Tag" analysis, you can also include a `tags` column (a list of strings).
 - Image columns should contain raw bytes (preferred), but base64 strings are tolerated and will be decoded best-effort; undecodable blobs simply trigger warnings.
 - `answer` is expected to be a single letter in `{A, B, C, D, E}`; anything else is treated as missing ground truth, disabling accuracy for that row.
 - Extra columns are ignored, and numeric/text types are coerced as needed (for example, `points` is cast to `float`).
@@ -29,7 +30,17 @@ Run Examples
   - `uv run python eval_run.py --dataset /abs/path/to/dataset.parquet --model openai/gpt-5 --reasoning none`
 - Vision (GPT‑5), chain-of-thought:
   - `uv run python eval_run.py --dataset /abs/path/to/dataset.parquet --model openai/gpt-5 --reasoning cot`
+- Text-only evaluation (skips multimodal questions):
+  - `uv run python eval_run.py --dataset /abs/path/to/dataset.parquet --model openai/gpt-5 --text-only`
 - Add `--sequential` if you need to process requests strictly one at a time.
+
+Advanced Runner Arguments
+
+- `--limit N`: Limit the run to a random sample of N questions.
+- `--seed N`: Set the random seed for sampling when using `--limit`.
+- `--text-only`: Evaluate only text (non-multimodal) questions.
+- `--fail-fast`: Stop the run on the first error.
+- For live dashboard customization: `--live-dashboard`, `--no-live-dashboard`, `--dashboard-refresh-hz HZ`, `--recent-items N`, `--ui-compact`.
 
 Image Controls (to reduce input bloat)
 
@@ -70,10 +81,19 @@ Dashboard
   - **Usage**: Navigate to the "Analysis" tab, select one or more runs from the checkbox list, and click "Analyze".
   - **Human vs. LLM Difficulty**: A scatter plot that correlates the average LLM performance on a question with human performance. This requires a `human_performance.parquet` file in the project root (see below).
   - **Normalized Performance**: A bar chart showing raw average human and LLM scores per year, plus a normalized score (`Human Score / LLM Score`) to track relative performance over time.
-  - **Performance by Tag**: A table that breaks down performance by question tags (e.g., "geometry", "algebra"), if tags are present in the dataset.
+  - **Performance by Tag**: A table that breaks down performance by question tags (e.g., "geometry", "algebra"), if a `tags` column is present in the dataset.
 - Export buttons on the run detail page respect current filters: CSV or JSON downloads via `/api/runs/{id}/results?download={csv|json}`. Filters, sorts, and pagination are all encoded into the request.
 - Reload when new run folders appear: `curl -X POST http://127.0.0.1:8000/api/reload` (or use any HTTP client). The index rebuild is fast and re-populates filter facets.
 - Known limitations: designed for single-user, local usage (no authentication); very large runs may still take a few seconds to stream filters/aggregates; the vendored chart shim supports only the dashboard’s built-in visualisations.
+
+### Advanced Dashboard Arguments
+
+You can customize the dashboard's behavior with these command-line arguments:
+- `--runs-dir PATH`: Directory containing run folders (default: `runs`).
+- `--models PATH`: Path to `models.json` (default: `models.json`).
+- `--templates PATH`: Template directory (default: `web/templates`).
+- `--static PATH`: Static assets directory (default: `web/static`).
+- `--reload`: Enable auto-reload for development.
 
 ### Human Performance Data (Optional)
 

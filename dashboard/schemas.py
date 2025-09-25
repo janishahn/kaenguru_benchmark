@@ -190,6 +190,11 @@ class DatasetChoice(BaseModel):
     image: Optional[str] = None
 
 
+class HumanPerformanceMetrics(BaseModel):
+    p_correct: Optional[float] = None
+    sample_size: Optional[int] = None
+
+
 class DatasetRow(BaseModel):
     id: str
     problem_statement: Optional[str] = None
@@ -200,6 +205,8 @@ class DatasetRow(BaseModel):
     year: Optional[str] = None
     group: Optional[str] = None
     points: Optional[float] = None
+    human_performance: Optional[HumanPerformanceMetrics] = None
+    tags: List[str] = Field(default_factory=list)
 
 
 class RowDetailResponse(BaseModel):

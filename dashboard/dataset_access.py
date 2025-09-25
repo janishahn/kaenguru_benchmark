@@ -52,10 +52,36 @@ def _downscale_image(data: bytes) -> bytes:
 
 
 class DatasetAccessor:
-    def __init__(self, cache_size: int = 256) -> None:
+    def __init__(
+        self,
+        cache_size: int = 256,
+        human_performance_path: Optional[Path] = None,
+    ) -> None:
         self._row_cache: cachetools.LRUCache = cachetools.LRUCache(maxsize=cache_size)
         self._path_cache: Dict[str, Optional[Path]] = {}
         self._repo_root = Path(__file__).resolve().parents[1]
+        self._human_performance_path = human_performance_path
+        self._human_performance_data = self._load_human_data(human_performance_path)
+
+    def _load_human_data(
+        self, human_performance_path: Optional[Path]
+    ) -> Dict[str, schemas.HumanPerformanceMetrics]:
+        if not human_performance_path or not human_performance_path.exists():
+            return {}
+
+        try:
+            table = pq.read_table(human_performance_path)
+            data = table.to_pandas()
+            return {
+                row["question_id"]: schemas.HumanPerformanceMetrics(
+                    p_correct=row.get("p_correct"),
+                    sample_size=row.get("sample_size"),
+                )
+                for _, row in data.iterrows()
+            }
+        except Exception:
+            # Log this properly in a real app
+            return {}
 
     def get_row(self, dataset_path: Optional[str], row_id: str) -> Optional[schemas.DatasetRow]:
         if not dataset_path:
@@ -63,7 +89,7 @@ class DatasetAccessor:
         path = self._resolve_dataset_path(dataset_path)
         if not path:
             return None
-        cache_key = (str(path), row_id)
+        cache_key = (str(path), row_id, self._human_performance_path)
         cached = self._row_cache.get(cache_key)
         if cached:
             return cached
@@ -177,8 +203,11 @@ class DatasetAccessor:
                 mime = guess_mime_from_bytes(scaled)
                 associated_images.append(build_data_url(scaled, mime))
 
+        row_id_str = str(row_data.get("id"))
+        human_performance = self._human_performance_data.get(row_id_str)
+
         return schemas.DatasetRow(
-            id=str(row_data.get("id")),
+            id=row_id_str,
             problem_statement=row_data.get("problem_statement"),
             options=options,
             question_image=question_image,
@@ -187,7 +216,9 @@ class DatasetAccessor:
             year=str(row_data.get("year")) if row_data.get("year") is not None else None,
             group=str(row_data.get("group")) if row_data.get("group") is not None else None,
             points=float(row_data.get("points")) if row_data.get("points") is not None else None,
+            human_performance=human_performance,
         )
 
 
 __all__ = ["DatasetAccessor"]
+

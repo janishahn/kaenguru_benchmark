@@ -26,10 +26,9 @@ Input Data
 Run Examples
 
 - Vision (GPT‑5), answer-only:
-  - `uv run python eval_run.py --dataset /abs/path/to/dataset.parquet --model openai/gpt-5 --reasoning none --max_tokens 128`
+  - `uv run python eval_run.py --dataset /abs/path/to/dataset.parquet --model openai/gpt-5 --reasoning none`
 - Vision (GPT‑5), chain-of-thought:
-  - `uv run python eval_run.py --dataset /abs/path/to/dataset.parquet --model openai/gpt-5 --reasoning cot --max_tokens 256`
-- Omit `--max_tokens` to let the provider choose defaults; the runner only sends a value if you specify one or if a retry needs more budget.
+  - `uv run python eval_run.py --dataset /abs/path/to/dataset.parquet --model openai/gpt-5 --reasoning cot`
 - Add `--sequential` if you need to process requests strictly one at a time.
 
 Image Controls (to reduce input bloat)
@@ -67,9 +66,24 @@ Dashboard
 - Overview page: cards summarize every run (accuracy badges, answered/skipped counts, latency/tokens averages). Failures and unknown-usage are surfaced as warning chips. Use the Compare button to pre-fill selectors on the compare page.
 - Run detail: filter sidebar (group, year, language, multimodal, correctness, reasoning mode, value ranges, warnings) drives server-side pagination and charts. Presets are stored in `localStorage`. Charts (group/year breakdowns, confusion matrix, latency/tokens histograms, predicted-letter distribution) update with the active filters. Click a row to open the drawer with dataset content (problem, answer choices, images, rationale text, warnings); a toggle reveals the raw model response when present. The issues panel surfaces top warning types and the failures timeline, with deep links back to affected ids.
 - Compare page: pick two runs to view metric deltas, group/year delta bars, and a per-id diff table. The view selector can restrict to changed/improved/regressed rows; optional limit caps the diff table size. Enable the confusion-matrix toggle to preview both runs' confusion matrices side by side.
+- **Scientific Analysis page**: A new page for advanced analysis across multiple runs.
+  - **Usage**: Navigate to the "Analysis" tab, select one or more runs from the checkbox list, and click "Analyze".
+  - **Human vs. LLM Difficulty**: A scatter plot that correlates the average LLM performance on a question with human performance. This requires a `human_performance.parquet` file in the project root (see below).
+  - **Normalized Performance**: A bar chart showing raw average human and LLM scores per year, plus a normalized score (`Human Score / LLM Score`) to track relative performance over time.
+  - **Performance by Tag**: A table that breaks down performance by question tags (e.g., "geometry", "algebra"), if tags are present in the dataset.
 - Export buttons on the run detail page respect current filters: CSV or JSON downloads via `/api/runs/{id}/results?download={csv|json}`. Filters, sorts, and pagination are all encoded into the request.
 - Reload when new run folders appear: `curl -X POST http://127.0.0.1:8000/api/reload` (or use any HTTP client). The index rebuild is fast and re-populates filter facets.
 - Known limitations: designed for single-user, local usage (no authentication); very large runs may still take a few seconds to stream filters/aggregates; the vendored chart shim supports only the dashboard’s built-in visualisations.
+
+### Human Performance Data (Optional)
+
+To enable human vs. LLM analysis, you can provide a `human_performance.parquet` file in the project's root directory. If this file exists, the dashboard will automatically load it.
+
+- **Path**: `/human_performance.parquet`
+- **Format**: A Parquet file with the following columns:
+  - `question_id` (string): The ID of the question, matching the main dataset.
+  - `p_correct` (float): The proportion of human students who answered the question correctly (e.g., 0.75 for 75%).
+  - `sample_size` (integer): The number of students in the sample.
 
 Notes
 

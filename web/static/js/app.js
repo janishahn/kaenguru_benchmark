@@ -1014,10 +1014,95 @@
     document.addEventListener('dashboard:themechange', rerenderCompareCharts);
   }
 
+  function initAnalysis(){
+    var analysisSection = document.querySelector('.analysis');
+    if (!analysisSection) return;
+
+    var form = $('#analysis-form');
+    var resultsContainer = $('#analysis-results-container');
+    var chartsContainer = $('.analysis-charts');
+    var tagsContainer = $('.analysis-tags');
+    var scatterPlotEl = $('#scatter-human-vs-llm');
+    var barChartEl = $('#bar-normalized-performance');
+    var tagTableBody = $('#tag-analysis-table tbody');
+    var charts = new window.DashboardCharts();
+
+    form.addEventListener('submit', function(event){
+      event.preventDefault();
+      var formData = new FormData(form);
+      var runIds = formData.getAll('run_ids');
+      if (!runIds.length) {
+        alert('Please select at least one run.');
+        return;
+      }
+
+      resultsContainer.style.display = 'block';
+      $('#analysis-results').innerHTML = '<p>Loading analysis...</p>';
+      chartsContainer.style.display = 'none';
+      tagsContainer.style.display = 'none';
+
+      // Construct form data for POST request
+      var postData = new URLSearchParams();
+      runIds.forEach(function(id) { postData.append('run_ids', id); });
+
+      fetch('/api/analysis', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: postData
+      })
+      .then(function(response) {
+        if (!response.ok) {
+          throw new Error('Request failed: ' + response.status);
+        }
+        return response.json();
+      })
+      .then(function(data){
+          $('#analysis-results').innerHTML = ''; // Clear loading message
+          chartsContainer.style.display = 'block';
+          tagsContainer.style.display = 'block';
+          
+          var scatterData = data.scatter.map(function(item) {
+            return [item.human_p_correct, item.avg_llm_score, item.question_id, item.llm_disagreement];
+          }).filter(function(item) {
+            return item[0] !== null && item[0] !== undefined;
+          });
+
+          charts.updateScatter(scatterPlotEl, scatterData);
+          charts.updateBar(barChartEl, data.bars);
+          renderTagTable(data.tags);
+        })
+        .catch(function(err){
+          $('#analysis-results').innerHTML = '<p class="error">Failed to load analysis: ' + err.message + '</p>';
+          console.error('Failed to load analysis', err);
+        });
+    });
+
+    function renderTagTable(tags) {
+      if (!tagTableBody) return;
+      tagTableBody.innerHTML = '';
+      if (!tags || !tags.length) {
+        var row = tagTableBody.insertRow();
+        var cell = row.insertCell();
+        cell.colSpan = 4;
+        cell.textContent = 'No tags found for this selection.';
+        return;
+      }
+
+      tags.forEach(function(tag) {
+        var row = tagTableBody.insertRow();
+        row.insertCell().textContent = tag.tag;
+        row.insertCell().textContent = tag.count;
+        row.insertCell().textContent = (tag.avg_human_score * 100).toFixed(1) + '%';
+        row.insertCell().textContent = (tag.avg_llm_score * 100).toFixed(1) + '%';
+      });
+    }
+  }
+
   document.addEventListener('DOMContentLoaded', function(){
     initThemeToggle();
     initOverview();
     initRunDetail();
     initCompare();
+    initAnalysis();
   });
 })();

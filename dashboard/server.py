@@ -4,17 +4,20 @@ from __future__ import annotations
 
 import csv
 import io
+from collections import defaultdict
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, List, Optional
 
-from fastapi import FastAPI, HTTPException, Query, Request
+import numpy as np
+from fastapi import FastAPI, HTTPException, Query, Request, Form
 from fastapi.responses import HTMLResponse, ORJSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 import humanize
 
 from . import schemas
+from . import analysis
 from .data_index import RunIndex, RunNotFoundError
 from .dataset_access import DatasetAccessor
 
@@ -22,6 +25,7 @@ DEFAULT_RUNS_DIR = Path("runs")
 DEFAULT_MODELS_PATH = Path("models.json")
 DEFAULT_TEMPLATE_DIR = Path("web/templates")
 DEFAULT_STATIC_DIR = Path("web/static")
+HUMAN_PERF_PATH = Path("human_performance.parquet")
 
 LIST_FIELDS = {
     "group",
@@ -64,7 +68,7 @@ def create_app(
     static_path = Path(static_dir)
 
     index = RunIndex(runs_path, models_path)
-    dataset_accessor = DatasetAccessor()
+    dataset_accessor = DatasetAccessor(human_performance_path=HUMAN_PERF_PATH)
     templates = Jinja2Templates(directory=str(templates_path))
     templates.env.filters.setdefault("intcomma", humanize.intcomma)
 
@@ -174,9 +178,87 @@ def create_app(
             context["compare"] = compare_payload
         return templates.TemplateResponse("compare.html", context)
 
+    @app.get("/analysis", response_class=HTMLResponse)
+    async def analysis_page(request: Request) -> HTMLResponse:
+        runs = index.list_runs()
+        return templates.TemplateResponse("analysis.html", {"request": request, "runs": runs})
+
     # ------------------------------------------------------------------
     # API Endpoints
     # ------------------------------------------------------------------
+
+    @app.post("/api/analysis")
+    async def api_analysis(request: Request, run_ids: List[str] = Form(...)):
+        question_analysis = analysis.analyze_question_difficulty(run_ids, index)
+
+        dataset_path = None
+        if run_ids:
+            try:
+                first_run_detail = index.get_run_detail(run_ids[0])
+                dataset_path = first_run_detail.config.args.dataset
+            except RunNotFoundError:
+                pass
+
+        scatter_data = []
+        yearly_agg = defaultdict(lambda: {"human_scores": [], "llm_scores": []})
+        tag_agg = defaultdict(lambda: {"human_scores": [], "llm_scores": [], "count": 0})
+
+        for record in question_analysis:
+            dataset_row = dataset_accessor.get_row(dataset_path, record.question_id)
+            human_p_correct = None
+            if dataset_row and dataset_row.human_performance:
+                human_p_correct = dataset_row.human_performance.p_correct
+
+            scatter_data.append(
+                {
+                    "question_id": record.question_id,
+                    "avg_llm_score": record.avg_llm_score,
+                    "human_p_correct": human_p_correct,
+                    "llm_disagreement": record.llm_disagreement,
+                    "llm_count": record.llm_count,
+                }
+            )
+
+            if dataset_row and dataset_row.year and human_p_correct is not None:
+                year = dataset_row.year
+                yearly_agg[year]["human_scores"].append(human_p_correct)
+                yearly_agg[year]["llm_scores"].append(record.avg_llm_score)
+            
+            if dataset_row and dataset_row.tags:
+                for tag in dataset_row.tags:
+                    tag_agg[tag]["count"] += 1
+                    if human_p_correct is not None:
+                        tag_agg[tag]["human_scores"].append(human_p_correct)
+                    tag_agg[tag]["llm_scores"].append(record.avg_llm_score)
+
+        bar_data = []
+        for year, data in yearly_agg.items():
+            avg_human_score = np.mean(data["human_scores"]) if data["human_scores"] else 0
+            avg_llm_score = np.mean(data["llm_scores"]) if data["llm_scores"] else 0
+            normalized_human_score = avg_human_score / avg_llm_score if avg_llm_score > 0 else 0
+            bar_data.append(
+                {
+                    "year": year,
+                    "avg_human_score": avg_human_score,
+                    "avg_llm_score": avg_llm_score,
+                    "normalized_human_score": normalized_human_score,
+                }
+            )
+
+        tag_data = []
+        for tag, data in tag_agg.items():
+            avg_human_score = np.mean(data["human_scores"]) if data["human_scores"] else 0
+            avg_llm_score = np.mean(data["llm_scores"]) if data["llm_scores"] else 0
+            tag_data.append(
+                {
+                    "tag": tag,
+                    "avg_human_score": avg_human_score,
+                    "avg_llm_score": avg_llm_score,
+                    "count": data["count"],
+                }
+            )
+
+        return {"scatter": scatter_data, "bars": sorted(bar_data, key=lambda x: x["year"]), "tags": sorted(tag_data, key=lambda x: x["tag"])}
 
     @app.get("/api/runs", response_model=schemas.RunListResponse)
     async def api_list_runs(request: Request) -> schemas.RunListResponse:

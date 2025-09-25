@@ -505,6 +505,126 @@
     this._applyOption(element.id, element, option);
   };
 
+  DashboardCharts.prototype.updateScatter = function(element, data) {
+    if (!element) return;
+    if (!data || !data.length) {
+      this._applyOption(element.id, element, this._emptyOption('No data for scatter plot'));
+      return;
+    }
+    var theme = currentTheme();
+    var option = {
+      color: palette(1),
+      tooltip: {
+        trigger: 'item',
+        formatter: function(params) {
+          var data = params.data || [];
+          return 'ID: ' + data[2] + '<br/>' +
+                 'Human: ' + percentLabel(data[0] * 100) + '<br/>' +
+                 'LLM: ' + percentLabel(data[1] * 100) + '<br/>' +
+                 'Disagreement: ' + (data[3] ? data[3].toFixed(3) : 'N/A');
+        }
+      },
+      grid: { left: '10%', right: '10%', top: 60, bottom: 60 },
+      xAxis: {
+        type: 'value',
+        name: 'Human Correctness (%)',
+        nameLocation: 'middle',
+        nameGap: 30,
+        min: 0,
+        max: 1,
+        axisLabel: {
+          color: theme.muted,
+          formatter: function(v) { return Math.round(v * 100) + '%'; }
+        },
+        splitLine: { lineStyle: { color: theme.border, opacity: 0.35 } }
+      },
+      yAxis: {
+        type: 'value',
+        name: 'Average LLM Correctness (%)',
+        nameLocation: 'middle',
+        nameGap: 50,
+        min: 0,
+        max: 1,
+        axisLabel: {
+          color: theme.muted,
+          formatter: function(v) { return Math.round(v * 100) + '%'; }
+        },
+        splitLine: { lineStyle: { color: theme.border, opacity: 0.35 } }
+      },
+      series: [{
+        type: 'scatter',
+        symbolSize: 8,
+        data: data
+      }]
+    };
+    this._applyOption(element.id, element, option);
+  };
+
+  DashboardCharts.prototype.updateBar = function(element, data) {
+    if (!element) return;
+    if (!data || !data.length) {
+      this._applyOption(element.id, element, this._emptyOption('No data for bar chart'));
+      return;
+    }
+    var theme = currentTheme();
+    var years = data.map(function(item) { return item.year; });
+    var humanScores = data.map(function(item) { return item.avg_human_score; });
+    var llmScores = data.map(function(item) { return item.avg_llm_score; });
+    var normalizedScores = data.map(function(item) { return item.normalized_human_score; });
+
+    var option = {
+      color: palette(3),
+      tooltip: {
+        trigger: 'axis',
+        axisPointer: { type: 'shadow' }
+      },
+      legend: {
+        data: ['Human Score', 'LLM Score', 'Normalized Human Score'],
+        textStyle: { color: theme.muted }
+      },
+      grid: { left: '10%', right: '10%', top: 60, bottom: 60 },
+      xAxis: {
+        type: 'category',
+        data: years,
+        axisLabel: { color: theme.text }
+      },
+      yAxis: [
+        {
+          type: 'value',
+          name: 'Score',
+          min: 0,
+          max: 1,
+          axisLabel: { color: theme.muted, formatter: function(v) { return Math.round(v * 100) + '%'; } }
+        },
+        {
+          type: 'value',
+          name: 'Normalized',
+          min: 0,
+          axisLabel: { color: theme.muted }
+        }
+      ],
+      series: [
+        {
+          name: 'Human Score',
+          type: 'bar',
+          data: humanScores
+        },
+        {
+          name: 'LLM Score',
+          type: 'bar',
+          data: llmScores
+        },
+        {
+          name: 'Normalized Human Score',
+          type: 'line',
+          yAxisIndex: 1,
+          data: normalizedScores
+        }
+      ]
+    };
+    this._applyOption(element.id, element, option);
+  };
+
   DashboardCharts.prototype.clear = function(){
     for (var key in this.instances){
       if (Object.prototype.hasOwnProperty.call(this.instances, key)){

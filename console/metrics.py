@@ -317,9 +317,21 @@ class Aggregator:
         if projected_total is None:
             projected_total = self._cost_known_total
 
-        # Confidence bands
+        # Apply early run adjustment: if we have limited cost data and are in early phase,
+        # the projection might be low due to initial underestimation
+        completion_ratio = self._completed / self.total_items if self.total_items > 0 else 0
+        early_stage_threshold = min(0.40, max(0.15, 15.0 / self.total_items)) if self.total_items > 0 else 0.40
+        has_limited_data = self._items_with_cost <= 15 or self._items_with_cost <= max(1, self.total_items * 0.15)
+
+        # Confidence bands - adjust band size based on sample size
         if projected_total > self._cost_known_total:
-            band = max(projected_total * 0.1, 0.01)
+            # Reduce band size if we have more samples
+            base_band = 0.1
+            if self._items_with_cost >= 50:
+                base_band = 0.05  # 5% band for high confidence
+            elif self._items_with_cost >= 20:
+                base_band = 0.07  # 7% band for medium confidence
+            band = max(projected_total * base_band, 0.01)
             projected_low = max(self._cost_known_total, projected_total - band)
             projected_high = projected_total + band
         else:
@@ -327,9 +339,9 @@ class Aggregator:
             projected_high = None
 
         confidence = "low"
-        if self._items_with_cost >= 20:
+        if self._items_with_cost >= 50:
             confidence = "high"
-        elif self._items_with_cost >= 5:
+        elif self._items_with_cost >= 10:
             confidence = "medium"
 
         if mean_cost_per_token is None and mean_cost_per_item is not None and confidence == "high":

@@ -1311,6 +1311,7 @@ def main():
     parser.add_argument("--no-events-jsonl", dest="events_jsonl", action="store_const", const="off", help="Disable usage events capture.")
     parser.add_argument("--recent-items", type=int, default=20, help="Number of recent items to show in the dashboard table.")
     parser.add_argument("--ui-compact", action="store_true", help="Use compact dashboard layout suitable for smaller terminals.")
+    parser.add_argument("--text-only", action="store_true", help="Evaluate only text (non-multimodal) questions; drop multimodal rows before running.")
     # Image controls for multimodal inputs
     parser.add_argument("--image_max_dim", type=int, default=1024, help="Max image dimension (long edge) in pixels; no upscaling")
     parser.add_argument("--image_jpeg_quality", type=int, default=85, help="JPEG quality (50–100)")
@@ -1376,6 +1377,19 @@ def main():
         else:
             df = df.head(args.limit)
 
+    total_rows_loaded = int(len(df))
+    cli_text_only = bool(getattr(args, "text_only", False))
+    cli_filtered_out_rows = 0
+    model_filtered_out_rows = 0
+    if cli_text_only:
+        mask = ~df["multimodal"].astype(bool)
+        cli_filtered_out_rows = int(len(df) - int(mask.sum()))
+        df = df.loc[mask]
+    elif not model_info.supports_vision:
+        mask = ~df["multimodal"].astype(bool)
+        model_filtered_out_rows = int(len(df) - int(mask.sum()))
+        df = df.loc[mask]
+
     headers = {
         "Authorization": f"Bearer {api_key}",
         "Content-Type": "application/json",
@@ -1422,6 +1436,15 @@ def main():
     if avg_points is not None:
         print(f"  Avg points: {avg_points:.2f}")
     print(f"  Year distribution: {year_desc}")
+    expected_skipped_due_to_model = 0
+    if cli_text_only:
+        print("  Text-only filter: on (--text-only)")
+        print(f"  Dropped due to --text-only: {cli_filtered_out_rows}")
+    elif not model_info.supports_vision:
+        print("  Text-only filter: on (model lacks vision)")
+        print(f"  Dropped due to no-vision: {model_filtered_out_rows}")
+    else:
+        print("  Text-only filter: off")
     # Add proper spacing after pre-run summary to separate from dashboard
     print()
 
@@ -1550,6 +1573,12 @@ def main():
         "unknown_usage_count": unknown_usage_count,
         "breakdown_by_group": breakdown_by("group"),
         "breakdown_by_year": breakdown_by("year"),
+        "text_only_evaluation": bool(cli_text_only or (not model_info.supports_vision)),
+        "text_only_source": ("cli" if cli_text_only else ("model" if not model_info.supports_vision else "none")),
+        "cli_filtered_out_multimodal_rows": int(cli_filtered_out_rows),
+        "model_filtered_out_multimodal_rows": int(model_filtered_out_rows),
+        "total_rows_loaded": int(total_rows_loaded),
+        "rows_after_filters": int(len(results_df)),
     }
 
     with open(os.path.join(run_dir, "metrics.json"), "w", encoding="utf-8") as f:
@@ -1562,6 +1591,15 @@ def main():
         "timestamp_utc": ts,
         "args": args_snapshot,
         "model": dataclasses.asdict(model_info),
+        "multimodal_policy": {
+            "text_only_cli": cli_text_only,
+            "model_supports_vision": bool(model_info.supports_vision),
+            "effective_text_only": bool(cli_text_only or (not model_info.supports_vision)),
+            "total_rows_loaded": int(total_rows_loaded),
+            "cli_filtered_out_rows": int(cli_filtered_out_rows),
+            "model_filtered_out_rows": int(model_filtered_out_rows),
+            "rows_after_filter": int(len(rows_data)),
+        },
     }
     with open(os.path.join(run_dir, "config.json"), "w", encoding="utf-8") as f:
         json.dump(config, f, ensure_ascii=False, indent=2)

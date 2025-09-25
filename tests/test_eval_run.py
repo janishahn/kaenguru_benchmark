@@ -498,14 +498,41 @@ def test_skip_images_for_text_only_model(monkeypatch, tmp_path):
         model_id="text-only/test",
         responses=[],
     )
-    # No results because the only row was skipped
+    # No results because the only row was filtered out pre-run
     import pandas as pd
 
     df = pd.read_parquet(run_dir / "results.parquet", engine="pyarrow")
     assert len(df) == 0
     metrics = json.loads((run_dir / "metrics.json").read_text())
     assert metrics["answered_count"] == 0
-    assert metrics["skipped_count"] == 1
+    # Now filtered at load time, not skipped at worker time
+    assert metrics["skipped_count"] == 0
+    assert metrics["text_only_evaluation"] is True
+    assert metrics["text_only_source"] == "model"
+    assert metrics.get("model_filtered_out_multimodal_rows") == 1
+
+
+def test_text_only_cli_filters_multimodal(monkeypatch, tmp_path):
+    dataset = write_parquet(tmp_path, [make_row(10, with_images=True)])
+    # Vision-capable model, but CLI flag should filter out multimodal rows
+    run_dir = run_eval(
+        monkeypatch,
+        tmp_path,
+        dataset,
+        model_id="openai/gpt-5",
+        responses=[],
+        extra_args=["--text-only"],
+    )
+    import pandas as pd
+
+    df = pd.read_parquet(run_dir / "results.parquet", engine="pyarrow")
+    assert len(df) == 0
+    metrics = json.loads((run_dir / "metrics.json").read_text())
+    assert metrics["answered_count"] == 0
+    assert metrics["skipped_count"] == 0
+    assert metrics["text_only_evaluation"] is True
+    assert metrics["text_only_source"] == "cli"
+    assert metrics.get("cli_filtered_out_multimodal_rows") == 1
 
 
 def test_image_decode_warning(monkeypatch, tmp_path):

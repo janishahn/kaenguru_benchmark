@@ -163,7 +163,8 @@ class RunIndex:
         has_failures = files.failures is not None and files.failures.exists() and files.failures.stat().st_size > 0
         ts = parse_run_timestamp(run_id)
 
-        return RunRecord(
+        # Create a temporary record to pass to the calculation method
+        temp_record = RunRecord(
             run_id=run_id,
             paths=files,
             metrics=metrics,
@@ -177,6 +178,14 @@ class RunIndex:
             timestamp=ts.strftime("%Y-%m-%d %H:%M:%S") if ts else None,
             timestamp_dt=ts,
         )
+
+        # Calculate total_points_earned for legacy runs if not present or still default value
+        # If metrics.total_points_earned is 0 and other metrics exist, check if we need to calculate
+        if metrics.total_points_earned == 0.0 and metrics.answered_count > 0:
+            total_points = self._calculate_total_points_earned_direct(files)
+            temp_record.metrics.total_points_earned = total_points
+
+        return temp_record
 
     def _optional_file(self, directory: Path, name: str) -> Optional[Path]:
         candidate = directory / name
@@ -308,6 +317,40 @@ class RunIndex:
             results_sources=build_options(source_total, source_active, source_labels),
             has_failures=build_options(failure_total, failure_active, failure_labels),
         )
+
+    def _calculate_total_points_earned_direct(self, paths: RunFilePaths) -> float:
+        """Calculate the total points earned for a run by summing points_earned from all results."""
+        total_points = 0.0
+        
+        # Determine which results file to use
+        results_path = paths.results_jsonl or paths.results_json or paths.results_parquet
+        if not results_path:
+            return 0.0
+            
+        try:
+            if paths.results_jsonl:
+                for obj in load_jsonl(paths.results_jsonl):
+                    row = self._row_from_obj(obj)
+                    if row.points_earned is not None:
+                        total_points += float(row.points_earned)
+            elif paths.results_json:
+                data = load_json(paths.results_json)
+                for obj in data:
+                    row = self._row_from_obj(obj)
+                    if row.points_earned is not None:
+                        total_points += float(row.points_earned)
+            elif paths.results_parquet:
+                import pyarrow.parquet as pq
+                parquet_file = pq.ParquetFile(paths.results_parquet)
+                for batch in parquet_file.iter_batches():
+                    for obj in batch.to_pylist():
+                        row = self._row_from_obj(obj)
+                        if row.points_earned is not None:
+                            total_points += float(row.points_earned)
+        except FileNotFoundError:
+            # If results file is missing, return 0
+            pass
+        return total_points
 
     def get_run(self, run_id: str) -> RunRecord:
         record = self._runs.get(run_id)

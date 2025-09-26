@@ -17,7 +17,7 @@
   {% endif %}
   <div class="run-card__metrics">
     <div class="metric"><span class="metric__label">Accuracy</span><span class="metric__value accuracy {{ accuracy_class }}">{{ accuracy_value | round(2) if accuracy_value is not none else '–' }}{% if accuracy_value is not none %}%{% endif %}</span></div>
-    <div class="metric"><span class="metric__label">PWA</span><span class="metric__value">{{ (run.metrics.points_weighted_accuracy * 100) | round(2) }}%</span></div>
+    <div class="metric"><span class="metric__label">Total Points</span><span class="metric__value">{{ run.metrics.total_points_earned | round(2) }}</span></div>
     <div class="metric"><span class="metric__label">Answered</span><span class="metric__value">{{ run.metrics.answered_count | intcomma }}</span></div>
     <div class="metric"><span class="metric__label">Failed</span><span class="metric__value">{{ run.metrics.failed_count | intcomma }}</span></div>
     <div class="metric"><span class="metric__label">Latency</span><span class="metric__value">{{ run.metrics.mean_latency_ms | round(1) if run.metrics.mean_latency_ms else '–' }} ms</span></div>

@@ -1504,8 +1504,10 @@ def main():
         answered_points = results_df.loc[answered_mask, "points"].astype(float)
         earned_points = results_df.loc[answered_mask, "points_earned"].astype(float)
         p_weighted_accuracy = float(earned_points.sum() / answered_points.sum()) if answered_points.sum() > 0 else 0.0
+        total_points_earned = float(earned_points.sum())
     else:
         p_weighted_accuracy = 0.0
+        total_points_earned = 0.0
 
     if len(results_df.columns) > 0 and not answered_mask.empty:
         lat = results_df.loc[answered_mask, "latency_ms"].dropna().astype(float)
@@ -1563,6 +1565,7 @@ def main():
         "failed_count": failed_count,
         "accuracy": accuracy,
         "points_weighted_accuracy": p_weighted_accuracy,
+        "total_points_earned": total_points_earned,
         "mean_latency_ms": mean_latency,
         "median_latency_ms": median_latency,
         "mean_total_tokens": mean_tokens,

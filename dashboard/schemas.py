@@ -21,6 +21,7 @@ class RunMetrics(BaseModel):
     failed_count: int = 0
     accuracy: float = 0.0
     points_weighted_accuracy: float = 0.0
+    total_points_earned: float = 0.0
     mean_latency_ms: Optional[float] = None
     median_latency_ms: Optional[float] = None
     mean_total_tokens: Optional[float] = None

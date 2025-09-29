@@ -164,6 +164,7 @@ class Dashboard:
         # Format elapsed time
         elapsed_str = self._format_elapsed_time(snapshot.elapsed_time_seconds)
         
+        table.add_row(Text(f"Model: {snapshot.model_id}", style="yellow bold"))
         table.add_row(
             Text(f"Done {snapshot.completed_items}/{snapshot.total_items} ({pct:.1f}%)", style="bold"),
             Text(f"Elapsed: {elapsed_str}", style="green"),

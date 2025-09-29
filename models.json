@@ -46,7 +46,7 @@
       "id": "z-ai/glm-4.5v",
       "label": "Z-AI GLM 4.5V",
       "supports_vision": true,
-      "supports_json_response_format": true
+      "supports_json_response_format": false
     },
     {
       "id": "anthropic/claude-sonnet-4",
@@ -61,8 +61,20 @@
       "supports_json_response_format": true
     },
     {
+      "id": "anthropic/claude-sonnet-4.5",
+      "label": "Anthropic Claude Sonnet 4.5",
+      "supports_vision": true,
+      "supports_json_response_format": true
+    },
+    {
       "id": "x-ai/grok-4",
       "label": "X-AI Grok 4",
+      "supports_vision": true,
+      "supports_json_response_format": true
+    },
+    {
+      "id": "x-ai/grok-4-fast",
+      "label": "X-AI Grok 4 Fast",
       "supports_vision": true,
       "supports_json_response_format": true
     },
@@ -81,12 +93,6 @@
     {
       "id": "mistralai/mistral-medium-3.1",
       "label": "Mistral Medium 3.1",
-      "supports_vision": true,
-      "supports_json_response_format": true
-    },
-    {
-      "id": "opengvlab/internvl3-78b",
-      "label": "OpenGVLab InternVL3 78B",
       "supports_vision": true,
       "supports_json_response_format": true
     }

@@ -34,7 +34,10 @@ def dumps_json(data: Any) -> str:
 
 def parse_run_timestamp(run_id: str) -> Optional[dt.datetime]:
     """Extract the leading timestamp from a run id if present."""
-    ts_part = run_id.split("_", 1)[0]
+    parts = run_id.split("_")
+    if len(parts) < 2:
+        return None
+    ts_part = "_".join(parts[:2])
     try:
         return dt.datetime.strptime(ts_part, ISO_FORMAT)
     except ValueError:

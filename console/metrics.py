@@ -75,6 +75,7 @@ class CostProjection:
 @dataclass
 class DashboardSnapshot:
     timestamp: float
+    model_id: str
     total_items: int
     completed_items: int
     success: int
@@ -385,6 +386,7 @@ class Aggregator:
             mean_attempts = (self._attempts_sum / self._completed) if self._completed else None
             snapshot = DashboardSnapshot(
                 timestamp=current_time,
+                model_id=self.model_id,
                 total_items=self.total_items,
                 completed_items=self._completed,
                 success=self._success,

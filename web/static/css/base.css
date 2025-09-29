@@ -438,6 +438,19 @@ a:hover {
   gap: 0.35rem;
 }
 
+.summary-card--warn {
+  border-color: rgba(239, 68, 68, 0.35);
+  background: rgba(239, 68, 68, 0.07);
+}
+
+.summary-card--warn .summary-value {
+  color: var(--danger);
+}
+
+.summary-card--warn .summary-note {
+  color: var(--danger);
+}
+
 .summary-label {
   font-size: 0.75rem;
   color: var(--muted);

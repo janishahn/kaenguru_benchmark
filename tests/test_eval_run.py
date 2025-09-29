@@ -269,6 +269,8 @@ def test_no_live_dashboard_flag(monkeypatch, tmp_path):
     assert metrics["failed_count"] == 0
     assert metrics["accuracy"] == 1.0
     assert metrics["unknown_usage_count"] == 0
+    assert metrics["warning_row_count"] == 1
+    assert metrics["warning_counts"].get("regex_fallback") == 1
     assert metrics["total_reasoning_tokens"] is None
     assert metrics["mean_reasoning_tokens"] is None
     assert metrics["reasoning_tokens_known_count"] == 0
@@ -318,6 +320,8 @@ def test_regex_fallback_and_missing_usage(monkeypatch, tmp_path):
 
     metrics = json.loads((run_dir / "metrics.json").read_text())
     assert metrics["unknown_usage_count"] == 1
+    assert metrics["warning_row_count"] == 1
+    assert metrics["warning_counts"].get("regex_fallback") == 1
     assert metrics["total_reasoning_tokens"] is None
     assert metrics["mean_reasoning_tokens"] is None
     assert metrics["reasoning_tokens_known_count"] == 0
@@ -356,6 +360,10 @@ def test_list_content_response(monkeypatch, tmp_path):
 
     raw_payload = json.loads((run_dir / "raw_responses.jsonl").read_text().strip())
     assert raw_payload["id"] == 7
+
+    metrics = json.loads((run_dir / "metrics.json").read_text())
+    assert metrics["warning_row_count"] == 1
+    assert metrics["warning_counts"].get("json_extracted") == 1
 
 
 def test_usage_details_in_response_json(monkeypatch, tmp_path):

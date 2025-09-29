@@ -30,6 +30,16 @@
       <span class="summary-label">Skipped</span>
       <span class="summary-value">{{ run.metrics.skipped_count }}</span>
     </div>
+    {% if run.metrics.warning_row_count %}
+      {% set top_warnings = run.metrics.warning_counts | dictsort(by='value', reverse=True) %}
+      <div class="summary-card summary-card--warn">
+        <span class="summary-label">Rows with warnings</span>
+        <span class="summary-value">{{ run.metrics.warning_row_count }}</span>
+        {% for warning in top_warnings[:3] %}
+          <span class="summary-note">{{ warning[0] }} × {{ warning[1] }}</span>
+        {% endfor %}
+      </div>
+    {% endif %}
     <div class="summary-card">
       <span class="summary-label">Mean latency (ms)</span>
       <span class="summary-value">{{ run.metrics.mean_latency_ms | round(1) if run.metrics.mean_latency_ms else '–' }}</span>

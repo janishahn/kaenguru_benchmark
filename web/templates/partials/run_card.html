@@ -31,6 +31,12 @@
       {% if run.metrics.unknown_usage_count and run.metrics.unknown_usage_count > 0 %}
         <span class="tag tag--warn">Unknown usage: {{ run.metrics.unknown_usage_count }}</span>
       {% endif %}
+      {% if run.metrics.warning_row_count %}
+        <span class="tag tag--warn">Warnings: {{ run.metrics.warning_row_count }}</span>
+      {% endif %}
+      {% if run.metrics.warning_counts and run.metrics.warning_counts.get('retry_due_to_no_parse') %}
+        <span class="tag tag--warn">No-parse retries: {{ run.metrics.warning_counts.get('retry_due_to_no_parse') }}</span>
+      {% endif %}
     </div>
     <div class="run-card__actions">
       <a class="pill" href="/runs/{{ run.run_id }}">View</a>

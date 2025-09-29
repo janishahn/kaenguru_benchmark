@@ -8,6 +8,7 @@ import random
 import re
 import sys
 import time
+from collections import Counter
 from dataclasses import dataclass, asdict
 from datetime import datetime
 from io import BytesIO
@@ -741,6 +742,8 @@ async def evaluate_single_row(
     finish_reason = None
     native_finish = None
 
+    parse_retry_performed = False
+
     while attempt < max_attempts:
         attempt += 1
         if max_tokens_current is not None:
@@ -971,6 +974,16 @@ async def evaluate_single_row(
 
         if parse_warn:
             warnings.append(parse_warn)
+
+        if (
+            ans is None
+            and parse_warn == "no_parse"
+            and not parse_retry_performed
+            and attempt < max_attempts
+        ):
+            parse_retry_performed = True
+            warnings.append("retry_due_to_no_parse")
+            continue
 
         break
 
@@ -1613,6 +1626,30 @@ def main():
             result[str(key)] = {"count": int(sub_count), "accuracy": sub_acc, "points_weighted_accuracy": sub_pwa}
         return result
 
+    warning_counts_counter: Counter[str] = Counter()
+    warning_row_count = 0
+    if "warnings" in results_df.columns and not results_df.empty:
+        for entry in results_df["warnings"]:
+            if entry is None:
+                continue
+            if isinstance(entry, float) and pd.isna(entry):
+                continue
+            row_warnings: List[str] = []
+            if isinstance(entry, str):
+                row_warnings = [entry]
+            elif isinstance(entry, (list, tuple, set)):
+                row_warnings = [str(w) for w in entry if w]
+            else:
+                row_warnings = [str(entry)]
+            if row_warnings:
+                warning_row_count += 1
+                warning_counts_counter.update(row_warnings)
+    warning_counts = (
+        {key: count for key, count in warning_counts_counter.most_common()}
+        if warning_counts_counter
+        else {}
+    )
+
     metrics = {
         "answered_count": answered_count,
         "skipped_count": skipped_count,
@@ -1628,6 +1665,8 @@ def main():
         "reasoning_tokens_known_count": reasoning_tokens_known_count,
         "total_cost_usd_known": total_cost,
         "unknown_usage_count": unknown_usage_count,
+    "warning_row_count": int(warning_row_count),
+    "warning_counts": warning_counts,
         "breakdown_by_group": breakdown_by("group"),
         "breakdown_by_year": breakdown_by("year"),
         "text_only_evaluation": bool(cli_text_only or (not model_info.supports_vision)),
@@ -1690,6 +1729,13 @@ def main():
         print("  Reasoning tokens: n/a")
     print(f"  Known total cost: ${total_cost:.4f}")
     print(f"  Unknown usage rows: {unknown_usage_count}")
+    print(f"  Rows with warnings: {warning_row_count}")
+    if warning_counts_counter:
+        top_warnings = ", ".join(
+            f"{warn}×{count}" for warn, count in warning_counts_counter.most_common(3)
+        )
+        if top_warnings:
+            print(f"  Top warnings: {top_warnings}")
     print(f"  Worker count: {worker_count}")
     
     # Calculate and display total runtime

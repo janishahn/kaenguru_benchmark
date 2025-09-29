@@ -30,8 +30,14 @@ class RunMetrics(BaseModel):
     reasoning_tokens_known_count: Optional[int] = None
     total_cost_usd_known: Optional[float] = None
     unknown_usage_count: Optional[int] = None
+    warning_row_count: int = 0
+    warning_counts: Dict[str, int] = Field(default_factory=dict)
     breakdown_by_group: Dict[str, BreakdownEntry] = Field(default_factory=dict)
     breakdown_by_year: Dict[str, BreakdownEntry] = Field(default_factory=dict)
+
+    @computed_field(return_type=bool)
+    def has_warnings(self) -> bool:
+        return bool(self.warning_row_count)
 
 
 class RunConfigArgs(BaseModel):

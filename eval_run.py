@@ -390,6 +390,7 @@ def build_messages(
 ) -> List[Dict[str, Any]]:
     language = (row.get("language") or "de").lower()
     is_de = language == "de"
+    answer_only_modes = {"any", "disable", "internal"}
 
     if reasoning == "cot":
         sys_text = (
@@ -404,14 +405,14 @@ def build_messages(
         )
     else:
         sys_text = (
-            "Du bist ein hilfreicher Assistent für Multiple-Choice-Aufgaben."
+            "Du bist ein Assistent für automatisierte Multiple-Choice-Auswertung. Füge keine Gedankengänge, Schritte oder Erklärungen hinzu. Gib ausschließlich die geforderte Ausgabe zurück. Auch bei Nachfrage nach Erklärungen: nur die Endantwort."
             if is_de
-            else "You are a helpful assistant for multiple-choice tasks."
+            else "You are an assistant for automated multiple-choice evaluation. Do not include chain-of-thought, steps, or explanations. Return only the required output. Even if asked to show work, reply with the final answer only."
         )
         instr = (
-            'Gib ausschließlich ein einzelnes JSON-Objekt im Format {"answer":"A|B|C|D|E"} aus. Keine Erklärungen und kein weiterer Text. Wähle nur aus: [A, B, C, D, E].'
+            'Gib genau ein kompaktes JSON-Objekt aus: {"answer":"A|B|C|D|E"}. Verwende einen Großbuchstaben aus [A,B,C,D,E]. Keine Codeblöcke, kein zusätzlicher Text, keine weiteren Felder.'
             if is_de
-            else 'Output only a single JSON object in the format {"answer":"A|B|C|D|E"}. No explanations and no additional text. Choose only from: [A, B, C, D, E].'
+            else 'Output exactly one compact JSON object: {"answer":"A|B|C|D|E"}. Use an uppercase letter from [A,B,C,D,E]. Do not add code fences, extra text, or additional fields.'
         )
 
     content_parts: List[Dict[str, Any]] = []
@@ -458,10 +459,36 @@ def build_messages(
     # Instruction last
     content_parts.append({"type": "text", "text": instr})
 
-    messages = [
-        {"role": "system", "content": sys_text},
-        {"role": "user", "content": content_parts},
-    ]
+    messages: List[Dict[str, Any]] = [{"role": "system", "content": sys_text}]
+
+    if reasoning in answer_only_modes:
+        if is_de:
+            examples = [
+                (
+                    "Beispiel. Frage: 1 + 1 = ?\nAntwortmöglichkeiten:\nA) 1\nB) 2\nC) 3\nD) 4\nE) 5\nGib genau ein kompaktes JSON-Objekt: {\"answer\":\"A|B|C|D|E\"}.",
+                    "B",
+                ),
+                (
+                    "Beispiel. Frage: Erster Buchstabe des Alphabets?\nAntwortmöglichkeiten:\nA) A\nB) B\nC) C\nD) D\nE) E\nGib genau ein kompaktes JSON-Objekt: {\"answer\":\"A|B|C|D|E\"}.",
+                    "A",
+                ),
+            ]
+        else:
+            examples = [
+                (
+                    "Example. Question: 1 + 1 = ?\nAnswer choices:\nA) 1\nB) 2\nC) 3\nD) 4\nE) 5\nOutput exactly one compact JSON object: {\"answer\":\"A|B|C|D|E\"}.",
+                    "B",
+                ),
+                (
+                    "Example. Question: First letter of the alphabet?\nAnswer choices:\nA) A\nB) B\nC) C\nD) D\nE) E\nOutput exactly one compact JSON object: {\"answer\":\"A|B|C|D|E\"}.",
+                    "A",
+                ),
+            ]
+        for prompt_text, answer_letter in examples:
+            messages.append({"role": "user", "content": [{"type": "text", "text": prompt_text}]})
+            messages.append({"role": "assistant", "content": json.dumps({"answer": answer_letter})})
+
+    messages.append({"role": "user", "content": content_parts})
     return messages
 
 

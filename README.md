@@ -42,6 +42,15 @@ Advanced Runner Arguments
 - `--fail-fast`: Stop the run on the first error.
 - For live dashboard customization: `--live-dashboard`, `--no-live-dashboard`, `--dashboard-refresh-hz HZ`, `--recent-items N`, `--ui-compact`.
 
+Dataset Filtering
+
+- `--year <YYYY>`: Select specific competition year(s). Can be used multiple times.
+- `--group <GROUP>`: Select specific grade group(s).
+- `--language <LANG>`: Select specific language(s).
+- `--year-range <START-END>`: Select a continuous range of years.
+- `--points-range <MIN-MAX>`: Select a range of question point values.
+- `--vision-only`: Run only on multimodal (vision) questions.
+
 Image Controls (to reduce input bloat)
 
 - The evaluator downsizes images before sending to the model. Flags:

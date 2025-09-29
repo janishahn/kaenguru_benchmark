@@ -1316,6 +1316,19 @@ def main():
     parser.add_argument("--image_max_dim", type=int, default=1024, help="Max image dimension (long edge) in pixels; no upscaling")
     parser.add_argument("--image_jpeg_quality", type=int, default=85, help="JPEG quality (50–100)")
     parser.add_argument("--image_detail", choices=["auto", "low", "high"], default="auto", help="Vision detail hint for providers that support it")
+    
+    # Categorical Filters
+    parser.add_argument("--year", type=int, action="append", help="Filter by one or more specific years.")
+    parser.add_argument("--group", type=str, action="append", help="Filter by one or more specific grade groups.")
+    parser.add_argument("--language", type=str, action="append", help="Filter by one or more specific languages.")
+    
+    # Range Filters
+    parser.add_argument("--year-range", type=str, help="Filter by an inclusive range of years (e.g., '2020-2023').")
+    parser.add_argument("--points-range", type=str, help="Filter by an inclusive range of points (e.g., '3.75-5.0').")
+    
+    # Boolean Filter
+    parser.add_argument("--vision-only", action="store_true", help="Evaluate only vision (multimodal) questions.")
+    
     args = parser.parse_args()
 
     stdout_isatty = sys.stdout.isatty()
@@ -1376,6 +1389,47 @@ def main():
             df = df.sample(n=args.limit, random_state=args.seed)
         else:
             df = df.head(args.limit)
+
+    # Handle mutual exclusion between text-only and vision-only
+    if args.text_only and args.vision_only:
+        print("ERROR: --text-only and --vision-only are mutually exclusive.", file=sys.stderr)
+        sys.exit(2)
+
+    # Apply filters sequentially
+    # Categorical filters
+    if args.year:
+        df = df[df['year'].isin(args.year)]
+    
+    if args.group:
+        df = df[df['group'].isin(args.group)]
+    
+    if args.language:
+        df = df[df['language'].isin(args.language)]
+    
+    # Range filters
+    if args.year_range:
+        try:
+            start_str, end_str = args.year_range.split('-')
+            start = int(start_str.strip())
+            end = int(end_str.strip())
+            df = df[(df['year'] >= start) & (df['year'] <= end)]
+        except ValueError:
+            print(f"ERROR: Invalid year range format: '{args.year_range}'. Expected format: 'START-END'", file=sys.stderr)
+            sys.exit(2)
+    
+    if args.points_range:
+        try:
+            min_str, max_str = args.points_range.split('-')
+            min_val = float(min_str.strip())
+            max_val = float(max_str.strip())
+            df = df[(df['points'] >= min_val) & (df['points'] <= max_val)]
+        except ValueError:
+            print(f"ERROR: Invalid points range format: '{args.points_range}'. Expected format: 'MIN-MAX'", file=sys.stderr)
+            sys.exit(2)
+    
+    # Boolean filter
+    if args.vision_only:
+        df = df[df['multimodal'] == True]
 
     total_rows_loaded = int(len(df))
     cli_text_only = bool(getattr(args, "text_only", False))

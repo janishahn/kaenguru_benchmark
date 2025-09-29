@@ -13,7 +13,7 @@ from dataclasses import dataclass, asdict
 from datetime import datetime
 from io import BytesIO
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 
 import httpx
 import pandas as pd
@@ -72,6 +72,8 @@ class ModelInfo:
     supports_vision: bool = False
     supports_json_response_format: bool = False
     min_request_interval: Optional[float] = None
+    supports_internal_reasoning: Optional[bool] = None
+    supports_disabling_internal_reasoning: Optional[bool] = None
 
 
 @dataclass
@@ -104,6 +106,89 @@ class RowRecord:
     warnings: Optional[List[str]] = None
 
 
+class ReasoningCapabilityError(Exception):
+    """Raised when a requested reasoning mode is incompatible with model support."""
+
+
+VALID_REASONING_MODES = {"any", "cot", "internal", "disable"}
+REASONING_ALIASES = {"none": "any"}
+
+
+def canonicalize_reasoning_mode(value: Optional[str]) -> str:
+    if not value:
+        return "any"
+    normalized = value.strip().lower()
+    normalized = REASONING_ALIASES.get(normalized, normalized)
+    return normalized
+
+
+def build_reasoning_param(mode: str, *, effort: Optional[str] = None) -> Optional[Dict[str, Any]]:
+    if mode == "internal":
+        payload: Dict[str, Any] = {"enabled": True, "exclude": True}
+        if effort:
+            payload["effort"] = effort
+        return payload
+    if mode in {"cot", "disable"}:
+        return {"enabled": False, "exclude": True}
+    return None
+
+
+def probe_supported_parameters(model_id: str, api_key: str) -> Optional[Set[str]]:
+    url = "https://openrouter.ai/api/v1/models"
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Accept": "application/json",
+    }
+    try:
+        resp = httpx.get(url, headers=headers, timeout=5.0)
+    except Exception:
+        return None
+    if resp.status_code != 200:
+        return None
+    try:
+        data = resp.json()
+    except Exception:
+        return None
+
+    entries: List[Dict[str, Any]] = []
+    if isinstance(data, dict) and isinstance(data.get("data"), list):
+        entries = [item for item in data["data"] if isinstance(item, dict)]
+    elif isinstance(data, list):
+        entries = [item for item in data if isinstance(item, dict)]
+
+    for entry in entries:
+        if entry.get("id") != model_id:
+            continue
+        params = entry.get("supported_parameters")
+        if isinstance(params, list):
+            return {str(p) for p in params if isinstance(p, str)}
+        break
+    return None
+
+
+def apply_supported_parameters(model_info: ModelInfo, supported_parameters: Optional[Set[str]]) -> None:
+    if not supported_parameters:
+        return
+    if "reasoning" in supported_parameters and model_info.supports_internal_reasoning is None:
+        model_info.supports_internal_reasoning = True
+
+
+def ensure_reasoning_mode_supported(mode: str, model_info: ModelInfo) -> None:
+    def is_true(value: Optional[bool]) -> bool:
+        return value is True
+
+    if mode == "internal":
+        if not is_true(model_info.supports_internal_reasoning):
+            raise ReasoningCapabilityError(
+                "Model does not declare support for the unified 'reasoning' parameter. "
+                "Set supports_internal_reasoning=true in models.json or choose --reasoning any."
+            )
+    if mode in {"cot", "disable"}:
+        if not is_true(model_info.supports_disabling_internal_reasoning):
+            raise ReasoningCapabilityError(
+                "Model cannot be confirmed to disable internal reasoning. "
+                "Set supports_disabling_internal_reasoning=true in models.json or choose a different reasoning mode."
+            )
 @dataclass
 class WorkerOutcome:
     record: Optional[RowRecord]
@@ -166,12 +251,28 @@ def read_models_registry(path: str) -> Dict[str, ModelInfo]:
         elif isinstance(rate_limit, (int, float)) and rate_limit > 0:
             min_interval = 1.0 / float(rate_limit)
 
+        sir_raw = m.get("supports_internal_reasoning")
+        sir: Optional[bool]
+        if isinstance(sir_raw, bool):
+            sir = sir_raw
+        else:
+            sir = None
+
+        sdir_raw = m.get("supports_disabling_internal_reasoning")
+        sdir: Optional[bool]
+        if isinstance(sdir_raw, bool):
+            sdir = sdir_raw
+        else:
+            sdir = None
+
         info = ModelInfo(
             id=m.get("id"),
             label=m.get("label"),
             supports_vision=bool(m.get("supports_vision", False)),
             supports_json_response_format=bool(m.get("supports_json_response_format", False)),
             min_request_interval=min_interval,
+            supports_internal_reasoning=sir,
+            supports_disabling_internal_reasoning=sdir,
         )
         models[info.id] = info
     return models
@@ -723,6 +824,9 @@ async def evaluate_single_row(
         "top_p": args.top_p,
         "usage": {"include": True},
     }
+    reasoning_payload = build_reasoning_param(args.reasoning, effort=args.internal_effort)
+    if reasoning_payload is not None:
+        payload["reasoning"] = reasoning_payload
     if model_info.supports_json_response_format:
         payload["response_format"] = build_response_format(args.reasoning)
 
@@ -1303,7 +1407,18 @@ def main():
     parser = argparse.ArgumentParser(description="LLM evaluation runner for Känguru benchmark")
     parser.add_argument("--dataset", required=True, help="Path to dataset .parquet")
     parser.add_argument("--model", required=True, help="Model ID from models.json")
-    parser.add_argument("--reasoning", choices=["none", "cot"], default="none")
+    parser.add_argument(
+        "--reasoning",
+        choices=["any", "cot", "internal", "disable", "none"],
+        default="any",
+        help="Reasoning control: 'any' (default, legacy 'none'), 'cot', 'internal', or 'disable'.",
+    )
+    parser.add_argument(
+        "--internal-effort",
+        choices=["low", "medium", "high"],
+        default=None,
+        help="Optional effort hint when using --reasoning internal (ignored otherwise).",
+    )
     parser.add_argument("--max_tokens", type=int, default=None)
     parser.add_argument("--temperature", type=float, default=0.0)
     parser.add_argument("--top_p", type=float, default=1.0)
@@ -1344,6 +1459,15 @@ def main():
     
     args = parser.parse_args()
 
+    args.reasoning = canonicalize_reasoning_mode(args.reasoning)
+    if args.reasoning not in VALID_REASONING_MODES:
+        print(f"ERROR: unsupported reasoning mode '{args.reasoning}'.", file=sys.stderr)
+        sys.exit(2)
+
+    if args.internal_effort and args.reasoning != "internal":
+        print("ERROR: --internal-effort can only be used with --reasoning internal.", file=sys.stderr)
+        sys.exit(2)
+
     stdout_isatty = sys.stdout.isatty()
     if args.live_dashboard is True:
         dashboard_enabled = True
@@ -1374,9 +1498,18 @@ def main():
         sys.exit(2)
     model_info = models[args.model]
 
+    supported_parameters = probe_supported_parameters(model_info.id, api_key)
+    apply_supported_parameters(model_info, supported_parameters)
+
     try:
         dataset_path = resolve_dataset_path(args.dataset)
     except Exception as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        sys.exit(2)
+
+    try:
+        ensure_reasoning_mode_supported(args.reasoning, model_info)
+    except ReasoningCapabilityError as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
         sys.exit(2)
 
@@ -1500,6 +1633,8 @@ def main():
     else:
         print("  Usage events: disabled")
     print(f"  Reasoning: {args.reasoning}")
+    if args.reasoning == "internal" and args.internal_effort:
+        print(f"  Internal reasoning effort: {args.internal_effort}")
     if avg_points is not None:
         print(f"  Avg points: {avg_points:.2f}")
     print(f"  Year distribution: {year_desc}")

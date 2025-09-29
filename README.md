@@ -26,10 +26,15 @@ Input Data
 
 Run Examples
 
-- Vision (GPT‑5), answer-only:
-  - `uv run python eval_run.py --dataset /abs/path/to/dataset.parquet --model openai/gpt-5 --reasoning none`
-- Vision (GPT‑5), chain-of-thought:
+- Vision (GPT‑5), default reasoning (models may think internally or not):
+  - `uv run python eval_run.py --dataset /abs/path/to/dataset.parquet --model openai/gpt-5 --reasoning any`
+    - Legacy alias `--reasoning none` maps to the same behavior.
+- Vision (GPT‑5), explicit chain-of-thought (requires the model to support disabling internal reasoning):
   - `uv run python eval_run.py --dataset /abs/path/to/dataset.parquet --model openai/gpt-5 --reasoning cot`
+- Vision (GPT‑5), internal reasoning enabled but hidden from the response:
+  - `uv run python eval_run.py --dataset /abs/path/to/dataset.parquet --model openai/gpt-5 --reasoning internal --internal-effort high`
+- Vision (GPT‑5), internal reasoning explicitly disabled (requires the model to support disabling internal reasoning):
+  - `uv run python eval_run.py --dataset /abs/path/to/dataset.parquet --model openai/gpt-5 --reasoning disable`
 - Text-only evaluation (skips multimodal questions):
   - `uv run python eval_run.py --dataset /abs/path/to/dataset.parquet --model openai/gpt-5 --text-only`
 - Add `--sequential` if you need to process requests strictly one at a time.
@@ -40,6 +45,7 @@ Advanced Runner Arguments
 - `--seed N`: Set the random seed for sampling when using `--limit`.
 - `--text-only`: Evaluate only text (non-multimodal) questions.
 - `--fail-fast`: Stop the run on the first error.
+- `--internal-effort {low,medium,high}`: Optional hint when `--reasoning internal` is active; ignored for other modes.
 - For live dashboard customization: `--live-dashboard`, `--no-live-dashboard`, `--dashboard-refresh-hz HZ`, `--recent-items N`, `--ui-compact`.
 
 Dataset Filtering
@@ -131,6 +137,8 @@ Example `models.json` entry (all optional fields shown):
       "label": "OpenAI GPT-5",
       "supports_vision": true,
       "supports_json_response_format": true,
+      "supports_internal_reasoning": true,
+      "supports_disabling_internal_reasoning": true,
       "rate_limit": {
         "requests_per_second": 3,
         "requests_per_minute": 150,
@@ -142,3 +150,6 @@ Example `models.json` entry (all optional fields shown):
 ```
 
 - You can supply any subset of the `rate_limit` fields. The evaluator converts the first valid value into an initial inter-request delay and adapts from there based on live responses.
+- `supports_internal_reasoning`: mark `true` when the provider/model accepts the unified `reasoning` parameter (e.g., to enable hidden internal thinking). Leave unset/`null` if unknown.
+- `supports_disabling_internal_reasoning`: mark `true` when the provider/model allows forcing internal reasoning off. Modes `cot` and `disable` require this flag.
+- The runner will attempt to auto-detect `reasoning` support via the OpenRouter Models API when possible; explicit registry flags override the probe.

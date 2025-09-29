@@ -3,11 +3,13 @@ import os
 import sys
 from pathlib import Path
 from io import BytesIO
-from typing import List, Optional
+from typing import Any, Dict, List, Optional
 
 import httpx
 import pandas as pd
 from PIL import Image
+
+import pytest
 
 
 HERE = Path(__file__).resolve().parent
@@ -112,11 +114,14 @@ def run_eval(
     dataset_path: Path,
     model_id: str,
     responses,
-    reasoning="none",
+    reasoning="any",
     extra_args: Optional[List[str]] = None,
+    model_capabilities: Optional[Dict[str, Optional[bool]]] = None,
+    capture_payloads: Optional[List[Dict[str, Any]]] = None,
 ):
     # Import module fresh
     import importlib.util
+    monkeypatch.syspath_prepend(str(ROOT))
     mod_path = ROOT / "eval_run.py"
     spec = importlib.util.spec_from_file_location("eval_run", mod_path)
     assert spec and spec.loader, "Could not load eval_run module spec"
@@ -126,18 +131,41 @@ def run_eval(
     # Env
     monkeypatch.setenv("OPENROUTER_API_KEY", "test")
 
+    monkeypatch.setattr(eval_run, "probe_supported_parameters", lambda *_args, **_kwargs: None)
+
+    default_caps = {
+        "supports_internal_reasoning": True,
+        "supports_disabling_internal_reasoning": True,
+    }
+    if model_capabilities:
+        default_caps.update(model_capabilities)
+
     # Patch models registry to allow custom models if needed
     def fake_registry(_path):
         # use provided model id, supports vision for default
         if model_id == "text-only/test":
             return {
                 model_id: eval_run.ModelInfo(
-                    id=model_id, label="TextOnly", supports_vision=False, supports_json_response_format=True
+                    id=model_id,
+                    label="TextOnly",
+                    supports_vision=False,
+                    supports_json_response_format=True,
+                    supports_internal_reasoning=default_caps.get("supports_internal_reasoning"),
+                    supports_disabling_internal_reasoning=default_caps.get(
+                        "supports_disabling_internal_reasoning"
+                    ),
                 )
             }
         return {
             model_id: eval_run.ModelInfo(
-                id=model_id, label="GPT5", supports_vision=True, supports_json_response_format=True
+                id=model_id,
+                label="GPT5",
+                supports_vision=True,
+                supports_json_response_format=True,
+                supports_internal_reasoning=default_caps.get("supports_internal_reasoning"),
+                supports_disabling_internal_reasoning=default_caps.get(
+                    "supports_disabling_internal_reasoning"
+                ),
             )
         }
 
@@ -149,6 +177,8 @@ def run_eval(
     async def fake_post(self, url, *, headers=None, json=None, timeout=None, **kwargs):
         i = calls["count"]
         calls["count"] += 1
+        if capture_payloads is not None:
+            capture_payloads.append(json)
         resp = responses[i] if i < len(responses) else responses[-1]
         return resp
 
@@ -296,6 +326,129 @@ def test_cot_with_reason(monkeypatch, tmp_path):
     row = df.iloc[0]
     assert row["predicted"] == "A"
     assert row["rationale"] == "kurz"
+
+
+def test_internal_reasoning_payload(monkeypatch, tmp_path):
+    dataset = write_parquet(tmp_path, [make_row(11)])
+    payload = {
+        "id": "gen_internal",
+        "model": "openai/gpt-5",
+        "choices": [{"message": {"content": '{"answer":"B"}'}}],
+        "usage": {"prompt_tokens": 8, "completion_tokens": 4, "total_tokens": 12},
+    }
+    captured: List[Dict[str, Any]] = []
+    run_eval(
+        monkeypatch,
+        tmp_path,
+        dataset,
+        model_id="openai/gpt-5",
+        responses=[FakeResp(200, payload)],
+        reasoning="internal",
+        capture_payloads=captured,
+    )
+    assert captured, "request payload should be captured"
+    assert captured[0].get("reasoning") == {"enabled": True, "exclude": True}
+
+
+def test_internal_reasoning_requires_capability(monkeypatch, tmp_path):
+    dataset = write_parquet(tmp_path, [make_row(12)])
+    payload = {
+        "id": "gen_internal_fail",
+        "model": "openai/gpt-5",
+        "choices": [{"message": {"content": '{"answer":"A"}'}}],
+    }
+    with pytest.raises(SystemExit) as excinfo:
+        run_eval(
+            monkeypatch,
+            tmp_path,
+            dataset,
+            model_id="openai/gpt-5",
+            responses=[FakeResp(200, payload)],
+            reasoning="internal",
+            model_capabilities={"supports_internal_reasoning": None},
+        )
+    assert excinfo.value.code == 2
+
+
+def test_internal_effort_in_payload(monkeypatch, tmp_path):
+    dataset = write_parquet(tmp_path, [make_row(13)])
+    payload = {
+        "id": "gen_internal_effort",
+        "model": "openai/gpt-5",
+        "choices": [{"message": {"content": '{"answer":"C"}'}}],
+    }
+    captured: List[Dict[str, Any]] = []
+    run_eval(
+        monkeypatch,
+        tmp_path,
+        dataset,
+        model_id="openai/gpt-5",
+        responses=[FakeResp(200, payload)],
+        reasoning="internal",
+        extra_args=["--internal-effort", "high"],
+        capture_payloads=captured,
+    )
+    assert captured[0].get("reasoning") == {"enabled": True, "exclude": True, "effort": "high"}
+
+
+def test_internal_effort_requires_internal_mode(monkeypatch, tmp_path):
+    dataset = write_parquet(tmp_path, [make_row(14)])
+    payload = {
+        "id": "gen_internal_effort_fail",
+        "model": "openai/gpt-5",
+        "choices": [{"message": {"content": '{"answer":"A"}'}}],
+    }
+    with pytest.raises(SystemExit) as excinfo:
+        run_eval(
+            monkeypatch,
+            tmp_path,
+            dataset,
+            model_id="openai/gpt-5",
+            responses=[FakeResp(200, payload)],
+            reasoning="any",
+            extra_args=["--internal-effort", "low"],
+        )
+    assert excinfo.value.code == 2
+
+
+def test_disable_reasoning_payload(monkeypatch, tmp_path):
+    dataset = write_parquet(tmp_path, [make_row(15)])
+    payload = {
+        "id": "gen_disable",
+        "model": "openai/gpt-5",
+        "choices": [{"message": {"content": '{"answer":"D"}'}}],
+    }
+    captured: List[Dict[str, Any]] = []
+    run_eval(
+        monkeypatch,
+        tmp_path,
+        dataset,
+        model_id="openai/gpt-5",
+        responses=[FakeResp(200, payload)],
+        reasoning="disable",
+        capture_payloads=captured,
+    )
+    assert captured[0].get("reasoning") == {"enabled": False, "exclude": True}
+
+
+def test_disable_requires_capability(monkeypatch, tmp_path):
+    dataset = write_parquet(tmp_path, [make_row(16)])
+    payload = {
+        "id": "gen_disable_fail",
+        "model": "openai/gpt-5",
+        "choices": [{"message": {"content": '{"answer":"E"}'}}],
+    }
+    with pytest.raises(SystemExit) as excinfo:
+        run_eval(
+            monkeypatch,
+            tmp_path,
+            dataset,
+            model_id="openai/gpt-5",
+            responses=[FakeResp(200, payload)],
+            reasoning="disable",
+            model_capabilities={"supports_disabling_internal_reasoning": None},
+        )
+    assert excinfo.value.code == 2
 
 
 def test_regex_fallback_and_missing_usage(monkeypatch, tmp_path):
@@ -476,6 +629,25 @@ def test_x_usage_header_fallback(monkeypatch, tmp_path):
     assert metrics2["total_reasoning_tokens"] == 2
     assert metrics2["mean_reasoning_tokens"] == 2
     assert metrics2["reasoning_tokens_known_count"] == 1
+
+
+def test_legacy_none_alias(monkeypatch, tmp_path):
+    dataset = write_parquet(tmp_path, [make_row(17)])
+    payload = {
+        "id": "gen_none_alias",
+        "model": "openai/gpt-5",
+        "choices": [{"message": {"content": '{"answer":"A"}'}}],
+    }
+    run_dir = run_eval(
+        monkeypatch,
+        tmp_path,
+        dataset,
+        model_id="openai/gpt-5",
+        responses=[FakeResp(200, payload)],
+        reasoning="none",
+    )
+    config = json.loads((run_dir / "config.json").read_text())
+    assert config["args"]["reasoning"] == "any"
 
 
 def test_http_error_failure(monkeypatch, tmp_path):

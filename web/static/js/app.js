@@ -139,6 +139,131 @@
         } catch (err){ /* ignore */ }
       });
     }
+
+    if (!form.dataset.autosubmitBound){
+      form.dataset.autosubmitBound = 'true';
+      var submitDelay = 250;
+      var submitTimer = null;
+      var activeController = null;
+
+      function submitWithFallback(){
+        var hxGet = form.getAttribute('hx-get');
+        var hxTarget = form.getAttribute('hx-target');
+        if (!hxGet || !hxTarget || typeof window.fetch !== 'function'){
+          return false;
+        }
+
+        if (activeController){
+          activeController.abort();
+        }
+        var controller = new AbortController();
+        activeController = controller;
+
+        var rootEl = document.getElementById('overview-root');
+        if (rootEl){
+          rootEl.classList.add('is-loading');
+        }
+
+        var data = new FormData(form);
+        var params = new URLSearchParams();
+        data.forEach(function(value, key){
+          params.append(key, value);
+        });
+
+        var url = hxGet;
+        var query = params.toString();
+        if (query){
+          url += (url.indexOf('?') === -1 ? '?' : '&') + query;
+        }
+        var requestUrl = new URL(url, window.location.origin);
+
+        fetch(requestUrl.toString(), {
+          credentials: 'same-origin',
+          headers: { 'HX-Request': 'true' },
+          signal: controller.signal
+        })
+          .then(function(response){
+            if (!response.ok){
+              throw new Error('Request failed: ' + response.status);
+            }
+            return response.text().then(function(body){
+              return { body: body, response: response };
+            });
+          })
+          .then(function(payload){
+            if (controller.signal.aborted){
+              return;
+            }
+            var parser = new DOMParser();
+            var doc = parser.parseFromString(payload.body, 'text/html');
+            var replacement = doc.querySelector(hxTarget);
+            var targetEl = document.querySelector(hxTarget);
+            if (replacement && targetEl){
+              targetEl.replaceWith(replacement);
+              if (form.getAttribute('hx-push-url') === 'true'){
+                var finalUrl = payload.response && payload.response.url ? new URL(payload.response.url) : requestUrl;
+                window.history.pushState({}, '', finalUrl.pathname + finalUrl.search + finalUrl.hash);
+              }
+              var refreshed = document.querySelector('#overview-root');
+              if (refreshed){
+                refreshed.classList.remove('is-loading');
+              }
+              initOverview();
+            }
+          })
+          .catch(function(err){
+            if (err.name === 'AbortError'){
+              return;
+            }
+            console.error('Overview refresh failed', err);
+            if (typeof form.requestSubmit === 'function'){
+              form.requestSubmit();
+            } else {
+              form.submit();
+            }
+          })
+          .finally(function(){
+            if (activeController === controller){
+              activeController = null;
+            }
+            if (rootEl){
+              rootEl.classList.remove('is-loading');
+            }
+          });
+
+        return true;
+      }
+
+      function queueSubmit(){
+        if (submitTimer){
+          window.clearTimeout(submitTimer);
+        }
+        submitTimer = window.setTimeout(function(){
+          if (window.htmx && typeof window.htmx.trigger === 'function' && window.htmx.version !== '0.0.1-local'){
+            window.htmx.trigger(form, 'submit');
+          } else if (submitWithFallback()){
+            // handled via fetch fallback
+          } else if (typeof form.requestSubmit === 'function'){
+            form.requestSubmit();
+          } else {
+            form.submit();
+          }
+        }, submitDelay);
+      }
+
+      form.addEventListener('change', function(event){
+        if (!event.target || !event.target.name) return;
+        queueSubmit();
+      });
+
+      form.addEventListener('input', function(event){
+        var target = event.target;
+        if (!target || !target.name) return;
+        if (target.matches('input[type="search"], input[type="text"], input[type="date"], input[type="number"], textarea')){
+          queueSubmit();
+        }
+      });
+    }
   }
 
   function initRunDetail(){

@@ -21,7 +21,7 @@
     <div class="metric"><span class="metric__label">Answered</span><span class="metric__value">{{ run.metrics.answered_count | intcomma }}</span></div>
     <div class="metric"><span class="metric__label">Failed</span><span class="metric__value">{{ run.metrics.failed_count | intcomma }}</span></div>
     <div class="metric"><span class="metric__label">Latency</span><span class="metric__value">{{ run.metrics.mean_latency_ms | round(1) if run.metrics.mean_latency_ms else '–' }} ms</span></div>
-    <div class="metric"><span class="metric__label">Tokens</span><span class="metric__value">{{ run.metrics.mean_total_tokens | round(1) if run.metrics.mean_total_tokens else '–' }}</span></div>
+    <div class="metric"><span class="metric__label">Output tokens</span><span class="metric__value">{{ run.metrics.mean_completion_tokens | round(1) if run.metrics.mean_completion_tokens else '–' }}</span></div>
   </div>
   <div class="run-card__footer">
     <div class="run-card__tags">

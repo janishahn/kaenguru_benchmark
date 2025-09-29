@@ -24,7 +24,9 @@ class RunMetrics(BaseModel):
     total_points_earned: float = 0.0
     mean_latency_ms: Optional[float] = None
     median_latency_ms: Optional[float] = None
+    # Average tokens
     mean_total_tokens: Optional[float] = None
+    mean_completion_tokens: Optional[float] = None
     mean_reasoning_tokens: Optional[float] = None
     total_reasoning_tokens: Optional[int] = None
     reasoning_tokens_known_count: Optional[int] = None

@@ -185,11 +185,70 @@ class RunIndex:
             total_points = self._calculate_total_points_earned_direct(files)
             temp_record.metrics.total_points_earned = total_points
 
+        # Backfill mean_completion_tokens for legacy runs if missing but results have completion_tokens
+        if getattr(metrics, "mean_completion_tokens", None) is None and metrics.answered_count > 0:
+            backfilled_mean = self._calculate_mean_completion_tokens_direct(files)
+            if backfilled_mean is not None:
+                temp_record.metrics.mean_completion_tokens = backfilled_mean
+
         return temp_record
 
     def _optional_file(self, directory: Path, name: str) -> Optional[Path]:
         candidate = directory / name
         return candidate if candidate.exists() else None
+
+    def _calculate_mean_completion_tokens_direct(self, paths: RunFilePaths) -> Optional[float]:
+        """Compute mean of completion_tokens across answered rows directly from results files.
+
+        Returns None if not available.
+        """
+        results_path = paths.results_jsonl or paths.results_json or paths.results_parquet
+        if not results_path:
+            return None
+        total = 0
+        count = 0
+        try:
+            if paths.results_jsonl:
+                for obj in load_jsonl(paths.results_jsonl):
+                    ct = obj.get("completion_tokens")
+                    pred = obj.get("predicted")
+                    err = obj.get("error")
+                    if ct is not None and pred is not None and not err:
+                        try:
+                            total += int(ct)
+                            count += 1
+                        except Exception:
+                            continue
+            elif paths.results_json:
+                data = load_json(paths.results_json)
+                for obj in data:
+                    ct = obj.get("completion_tokens")
+                    pred = obj.get("predicted")
+                    err = obj.get("error")
+                    if ct is not None and pred is not None and not err:
+                        try:
+                            total += int(ct)
+                            count += 1
+                        except Exception:
+                            continue
+            elif paths.results_parquet:
+                parquet_file = pq.ParquetFile(paths.results_parquet)
+                for batch in parquet_file.iter_batches():
+                    for obj in batch.to_pylist():
+                        ct = obj.get("completion_tokens")
+                        pred = obj.get("predicted")
+                        err = obj.get("error")
+                        if ct is not None and pred is not None and not err:
+                            try:
+                                total += int(ct)
+                                count += 1
+                            except Exception:
+                                continue
+        except FileNotFoundError:
+            return None
+        if count == 0:
+            return None
+        return float(total) / float(count)
 
     def _build_inverted_index(self) -> None:
         for run_id in self._runs:

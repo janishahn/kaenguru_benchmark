@@ -1585,9 +1585,17 @@ def main():
         median_latency = None
 
     total_tokens_series = pd.Series(dtype="int64")
+    completion_tokens_series = pd.Series(dtype="int64")
     if len(results_df.columns) > 0 and not answered_mask.empty:
         total_tokens_series = results_df.loc[answered_mask, "total_tokens"].dropna().astype(int)
+        if "completion_tokens" in results_df.columns:
+            completion_tokens_series = (
+                results_df.loc[answered_mask, "completion_tokens"].dropna().astype(int)
+            )
         mean_tokens = float(total_tokens_series.mean()) if not total_tokens_series.empty else None
+        mean_completion_tokens = (
+            float(completion_tokens_series.mean()) if not completion_tokens_series.empty else None
+        )
         cost_series = results_df.loc[answered_mask, "cost_usd"].dropna().astype(float)
         total_cost = float(cost_series.sum()) if not cost_series.empty else 0.0
         if "reasoning_tokens" in results_df.columns:
@@ -1606,6 +1614,7 @@ def main():
         unknown_usage_count = int(answered_count - len(total_tokens_series))
     else:
         mean_tokens = None
+        mean_completion_tokens = None
         total_cost = 0.0
         unknown_usage_count = 0
         mean_reasoning_tokens = None
@@ -1659,7 +1668,8 @@ def main():
         "total_points_earned": total_points_earned,
         "mean_latency_ms": mean_latency,
         "median_latency_ms": median_latency,
-        "mean_total_tokens": mean_tokens,
+    "mean_total_tokens": mean_tokens,
+    "mean_completion_tokens": mean_completion_tokens,
         "mean_reasoning_tokens": mean_reasoning_tokens,
         "total_reasoning_tokens": total_reasoning_tokens,
         "reasoning_tokens_known_count": reasoning_tokens_known_count,

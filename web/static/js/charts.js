@@ -4,6 +4,7 @@
     window.DashboardCharts = function(){};
     window.DashboardCharts.prototype = {
       updateBreakdown: function(){},
+      updateDistribution: function(){},
       updateHistogram: function(){},
       updatePredicted: function(){},
       updateConfusion: function(){},
@@ -236,6 +237,68 @@
       }],
     };
     this._applyOption(key, element, option);
+  };
+
+  DashboardCharts.prototype.updateDistribution = function(element, key, entries){
+    if (!element) return;
+    var list = entries || [];
+    var chartKey = key || (element && element.id) || 'distribution';
+    if (!list.length){
+      this._applyOption(chartKey, element, this._emptyOption('No distribution data'));
+      return;
+    }
+    var labels = list.map(function(entry){ return entry && entry.label ? entry.label : 'Unknown'; });
+    var counts = list.map(function(entry){ return entry && entry.count ? Number(entry.count) : 0; });
+    var theme = currentTheme();
+    var rotation = rotateForLabels(labels);
+    var option = {
+      color: palette(Math.min(counts.length, 6)),
+      tooltip: {
+        trigger: 'axis',
+        axisPointer: { type: 'shadow' },
+        formatter: function(params){
+          if (!params || !params.length) return '';
+          var idx = params[0].dataIndex;
+          var current = list[idx] || {};
+          var percent = current.percentage ? (Number(current.percentage) * 100) : 0;
+          var percentLabel = percent ? percent.toFixed(1).replace(/\.0$/, '') + '%' : '0%';
+          return params[0].name + ': ' + params[0].value + ' (' + percentLabel + ')';
+        }
+      },
+      grid: { left: '10%', right: '6%', top: 40, bottom: rotation ? 70 : 40, containLabel: true },
+      xAxis: {
+        type: 'category',
+        data: labels,
+        axisLabel: {
+          color: theme.text,
+          interval: 0,
+          rotate: rotation,
+          hideOverlap: true,
+          formatter: function(value){ return wrapLabel(value, 12); }
+        },
+        axisTick: { alignWithLabel: true }
+      },
+      yAxis: {
+        type: 'value',
+        axisLabel: { color: theme.muted },
+        splitLine: {
+          lineStyle: { color: theme.border, opacity: 0.35 }
+        }
+      },
+      series: [{
+        type: 'bar',
+        data: counts,
+        barMaxWidth: 40,
+        itemStyle: { borderRadius: [4, 4, 0, 0] },
+        label: {
+          show: true,
+          position: 'top',
+          color: theme.muted,
+          formatter: function(params){ return params.value; }
+        }
+      }]
+    };
+    this._applyOption(chartKey, element, option);
   };
 
   DashboardCharts.prototype.updateHistogram = function(element, histogram){

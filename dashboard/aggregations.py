@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+import statistics
 from collections import Counter, defaultdict
 from typing import Dict, List, Mapping, Sequence
 
@@ -10,6 +11,218 @@ from . import schemas
 from .utils import grade_group_sort_key
 
 LETTER_SET = {"A", "B", "C", "D", "E"}
+CORRECTNESS_LABELS = {
+    "all": "All filtered rows",
+    "incorrect": "Incorrect",
+    "correct": "Correct",
+    "unknown": "Unknown/Skipped",
+}
+CORRECTNESS_ORDER = ["all", "incorrect", "correct", "unknown"]
+
+
+def _empty_bucket() -> Dict[str, object]:
+    return {
+        "count": 0,
+        "correct_count": 0,
+        "multimodal_true": 0,
+        "points": [],
+        "points_earned": [],
+        "latency": [],
+        "tokens": [],
+        "reasoning_tokens": [],
+        "cost": [],
+        "group_counter": Counter(),
+        "year_counter": Counter(),
+        "language_counter": Counter(),
+        "reasoning_counter": Counter(),
+    }
+
+
+def _extend_bucket(bucket: Dict[str, object], row: schemas.RowRecord) -> None:
+    bucket["count"] += 1
+    if row.is_correct is True:
+        bucket["correct_count"] += 1
+    if row.multimodal:
+        bucket["multimodal_true"] += 1
+
+    if row.points is not None:
+        bucket["points"].append(float(row.points))
+    if row.points_earned is not None:
+        bucket["points_earned"].append(float(row.points_earned))
+    if row.latency_ms is not None:
+        bucket["latency"].append(float(row.latency_ms))
+    if row.total_tokens is not None:
+        bucket["tokens"].append(float(row.total_tokens))
+    if row.reasoning_tokens is not None:
+        bucket["reasoning_tokens"].append(float(row.reasoning_tokens))
+    if row.cost_usd is not None:
+        bucket["cost"].append(float(row.cost_usd))
+
+    group_value = str(row.group) if row.group not in (None, "") else "Unknown"
+    bucket["group_counter"][group_value] += 1
+
+    year_value = str(row.year) if row.year not in (None, "") else "Unknown"
+    bucket["year_counter"][year_value] += 1
+
+    if row.language:
+        bucket["language_counter"][str(row.language)] += 1
+    else:
+        bucket["language_counter"]["Unknown"] += 1
+
+    if row.reasoning_mode:
+        bucket["reasoning_counter"][str(row.reasoning_mode)] += 1
+    else:
+        bucket["reasoning_counter"]["Unknown"] += 1
+
+
+def _round(value: float | None) -> float | None:
+    if value is None:
+        return None
+    return round(float(value), 4)
+
+
+def _numeric_summary(values: Sequence[float]) -> schemas.NumericSummary:
+    if not values:
+        return schemas.NumericSummary()
+    ordered = sorted(float(v) for v in values)
+    count = len(ordered)
+    mean_value = sum(ordered) / count if count else None
+    median_value = statistics.median(ordered) if count else None
+    min_value = ordered[0]
+    max_value = ordered[-1]
+    if count > 1:
+        try:
+            quantiles = statistics.quantiles(ordered, n=4, method="inclusive")
+            p25, p75 = quantiles[0], quantiles[2]
+        except (statistics.StatisticsError, IndexError):
+            p25 = ordered[0]
+            p75 = ordered[-1]
+        stddev = statistics.pstdev(ordered)
+    else:
+        p25 = ordered[0]
+        p75 = ordered[0]
+        stddev = 0.0
+    return schemas.NumericSummary(
+        count=count,
+        mean=_round(mean_value),
+        median=_round(median_value),
+        min=_round(min_value),
+        max=_round(max_value),
+        p25=_round(p25),
+        p75=_round(p75),
+        stddev=_round(stddev),
+    )
+
+
+def _distribution_from_counter(
+    counter: Counter,
+    total: int,
+    *,
+    sort_key=None,
+    limit: int | None = None,
+) -> List[schemas.DistributionBucket]:
+    if total <= 0 or not counter:
+        return []
+    items = list(counter.items())
+    if sort_key is not None:
+        items.sort(key=sort_key)
+    else:
+        items.sort(key=lambda kv: (-kv[1], kv[0]))
+    if limit is not None:
+        items = items[:limit]
+    result: List[schemas.DistributionBucket] = []
+    for key, count in items:
+        label = str(key)
+        if not label or label.lower() == "none":
+            label = "Unknown"
+        percentage = count / total if total else 0.0
+        result.append(
+            schemas.DistributionBucket(
+                key=str(key),
+                label=label,
+                count=int(count),
+                percentage=_round(percentage),
+            )
+        )
+    return result
+
+
+def _build_subset_metrics(rows: Sequence[schemas.RowRecord]) -> List[schemas.SubsetMetrics]:
+    buckets: Dict[str, Dict[str, object]] = {key: _empty_bucket() for key in CORRECTNESS_LABELS.keys()}
+
+    for row in rows:
+        _extend_bucket(buckets["all"], row)
+        if row.is_correct is True:
+            target_key = "correct"
+        elif row.is_correct is False:
+            target_key = "incorrect"
+        else:
+            target_key = "unknown"
+        _extend_bucket(buckets[target_key], row)
+
+    total_count = buckets["all"]["count"]
+    metrics: List[schemas.SubsetMetrics] = []
+
+    for key in CORRECTNESS_ORDER:
+        bucket = buckets[key]
+        count = bucket["count"]
+        share = (count / total_count) if total_count else 0.0
+        accuracy = (bucket["correct_count"] / count) if count else None
+        multimodal_share = (bucket["multimodal_true"] / count) if count else None
+
+        points_summary = _numeric_summary(bucket["points"])
+        points_earned_summary = _numeric_summary(bucket["points_earned"])
+        latency_summary = _numeric_summary(bucket["latency"])
+        tokens_summary = _numeric_summary(bucket["tokens"])
+        reasoning_tokens_summary = _numeric_summary(bucket["reasoning_tokens"])
+        cost_summary = _numeric_summary(bucket["cost"])
+
+        points_hist = build_histogram(bucket["points"]) if bucket["points"] else schemas.Histogram()
+        points_earned_hist = (
+            build_histogram(bucket["points_earned"])
+            if bucket["points_earned"]
+            else schemas.Histogram()
+        )
+
+        metrics.append(
+            schemas.SubsetMetrics(
+                key=key,
+                label=CORRECTNESS_LABELS[key],
+                count=int(count),
+                share=_round(share),
+                accuracy=_round(accuracy) if accuracy is not None else None,
+                multimodal_share=_round(multimodal_share) if multimodal_share is not None else None,
+                points_summary=points_summary,
+                points_earned_summary=points_earned_summary,
+                latency_summary=latency_summary,
+                tokens_summary=tokens_summary,
+                reasoning_tokens_summary=reasoning_tokens_summary,
+                cost_summary=cost_summary,
+                grade_distribution=_distribution_from_counter(
+                    bucket["group_counter"],
+                    count,
+                    sort_key=lambda item: grade_group_sort_key(item[0]),
+                ),
+                year_distribution=_distribution_from_counter(
+                    bucket["year_counter"],
+                    count,
+                ),
+                language_distribution=_distribution_from_counter(
+                    bucket["language_counter"],
+                    count,
+                    limit=8,
+                ),
+                reasoning_mode_distribution=_distribution_from_counter(
+                    bucket["reasoning_counter"],
+                    count,
+                    limit=8,
+                ),
+                points_hist=points_hist,
+                points_earned_hist=points_earned_hist,
+            )
+        )
+
+    return metrics
 
 
 def compute_aggregates(rows: Sequence[schemas.RowRecord]) -> schemas.AggregatesResponse:
@@ -84,10 +297,13 @@ def compute_aggregates(rows: Sequence[schemas.RowRecord]) -> schemas.AggregatesR
     tokens_hist = build_histogram(token_values)
     reasoning_hist = build_histogram(reasoning_values)
 
+    subset_metrics = _build_subset_metrics(rows)
+
     warning_toplist = [
         schemas.WarningBreakdown(warning_type=w, count=c) for w, c in warning_counts.most_common(10)
     ]
     return schemas.AggregatesResponse(
+        subset_metrics=subset_metrics,
         breakdown_by_group=finalize_breakdown(breakdown_group),
         breakdown_by_year=finalize_breakdown(breakdown_year),
         confusion_matrix=confusion_matrix,

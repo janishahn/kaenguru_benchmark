@@ -620,6 +620,137 @@ a:hover {
   grid-column: span 2;
 }
 
+.chart-card--no-min {
+  min-height: auto;
+}
+
+.chart-card__header {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+}
+
+.chart-card__note {
+  font-size: 0.85rem;
+  color: var(--muted);
+}
+
+.chart-tabs {
+  display: flex;
+  gap: 0.4rem;
+  flex-wrap: wrap;
+}
+
+.chart-tabs button {
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: transparent;
+  color: inherit;
+  padding: 0.35rem 0.85rem;
+  font-weight: 600;
+  font-size: 0.85rem;
+  cursor: pointer;
+}
+
+.chart-tabs button:hover {
+  background: var(--bg-hover);
+}
+
+.chart-tabs button.is-active {
+  background: var(--accent);
+  border-color: transparent;
+  color: #fff;
+}
+
+.chart-tabs button:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+
+.subset-summary-table__wrap {
+  width: 100%;
+  overflow-x: auto;
+}
+
+.subset-summary-table {
+  width: 100%;
+  min-width: 720px;
+  border-collapse: collapse;
+  font-size: 0.85rem;
+}
+
+.subset-summary-table th,
+.subset-summary-table td {
+  padding: 0.45rem 0.55rem;
+  border-bottom: 1px solid var(--border);
+  text-align: left;
+}
+
+.subset-summary-table thead th {
+  font-size: 0.7rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--muted);
+}
+
+.subset-summary-table tbody tr {
+  transition: background 0.15s ease;
+}
+
+.subset-summary-table tbody tr:hover {
+  background: var(--bg-hover);
+  cursor: pointer;
+}
+
+.subset-summary-table tbody tr.is-active {
+  background: rgba(59, 130, 246, 0.14);
+}
+
+.chart-card__list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.45rem;
+}
+
+.chart-card__list li {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 0.75rem;
+  font-size: 0.9rem;
+}
+
+.chart-card__list li span:last-child {
+  color: var(--muted);
+  font-size: 0.85rem;
+}
+
+.subset-split {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 1rem;
+}
+
+.subset-split__column {
+  flex: 1 1 200px;
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+}
+
+.subset-split__column h4 {
+  margin: 0;
+  font-size: 0.85rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--muted);
+}
+
 .table-toolbar {
   display: flex;
   justify-content: space-between;

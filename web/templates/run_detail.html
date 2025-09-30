@@ -190,13 +190,94 @@
             <div class="chart-card__surface" id="chart-token"></div>
           </div>
         </div>
-        <div class="chart-card">
-          <h3>Predicted letters</h3>
-          <div class="chart-card__canvas">
-            <div class="chart-card__surface" id="chart-predicted"></div>
+      <div class="chart-card">
+        <h3>Predicted letters</h3>
+        <div class="chart-card__canvas">
+          <div class="chart-card__surface" id="chart-predicted"></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="chart-grid chart-grid--insights">
+      <div class="chart-card chart-card--wide chart-card--no-min">
+        <div class="chart-card__header">
+          <h3>Filtered subset summary</h3>
+          <span class="chart-card__note" id="subset-summary-note">Adjust filters to view subset statistics.</span>
+        </div>
+        <div class="subset-summary-table__wrap">
+          <table class="subset-summary-table" id="correctness-summary">
+            <thead>
+              <tr>
+                <th>Subset</th>
+                <th>Questions</th>
+                <th>Share</th>
+                <th>Accuracy</th>
+                <th>Multimodal share</th>
+                <th>Avg points</th>
+                <th>Avg points earned</th>
+                <th>Median latency (ms)</th>
+                <th>Avg tokens</th>
+                <th>Avg cost ($)</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td colspan="10">Loading subset statistics…</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <div class="chart-card">
+        <div class="chart-card__header">
+          <h3>Grade distribution</h3>
+          <div class="chart-tabs" id="subset-correctness-toggle"></div>
+        </div>
+        <div class="chart-card__canvas">
+          <div class="chart-card__surface" id="chart-grade-subset"></div>
+        </div>
+      </div>
+
+      <div class="chart-card">
+        <h3>Points distribution</h3>
+        <div class="chart-card__canvas">
+          <div class="chart-card__surface" id="chart-points-subset"></div>
+        </div>
+      </div>
+
+      <div class="chart-card">
+        <h3>Points earned distribution</h3>
+        <div class="chart-card__canvas">
+          <div class="chart-card__surface" id="chart-points-earned"></div>
+        </div>
+      </div>
+
+      <div class="chart-card chart-card--no-min">
+        <h3>Subset statistics</h3>
+        <ul class="chart-card__list" id="subset-stats-list">
+          <li>No subset selected.</li>
+        </ul>
+      </div>
+
+      <div class="chart-card chart-card--no-min">
+        <h3>Language &amp; reasoning mix</h3>
+        <div class="subset-split">
+          <div class="subset-split__column">
+            <h4>Languages</h4>
+            <ul class="chart-card__list" id="subset-language-list">
+              <li>No data yet.</li>
+            </ul>
+          </div>
+          <div class="subset-split__column">
+            <h4>Reasoning modes</h4>
+            <ul class="chart-card__list" id="subset-reasoning-list">
+              <li>No data yet.</li>
+            </ul>
           </div>
         </div>
       </div>
+    </div>
 
       <div class="table-toolbar">
         <div id="active-filters"></div>

@@ -298,7 +298,47 @@ class Histogram(BaseModel):
     max: Optional[float] = None
 
 
+class NumericSummary(BaseModel):
+    count: int = 0
+    mean: Optional[float] = None
+    median: Optional[float] = None
+    min: Optional[float] = None
+    max: Optional[float] = None
+    p25: Optional[float] = None
+    p75: Optional[float] = None
+    stddev: Optional[float] = None
+
+
+class DistributionBucket(BaseModel):
+    key: str
+    label: str
+    count: int
+    percentage: float
+
+
+class SubsetMetrics(BaseModel):
+    key: str
+    label: str
+    count: int = 0
+    share: float = 0.0
+    accuracy: Optional[float] = None
+    multimodal_share: Optional[float] = None
+    points_summary: NumericSummary = Field(default_factory=NumericSummary)
+    points_earned_summary: NumericSummary = Field(default_factory=NumericSummary)
+    latency_summary: NumericSummary = Field(default_factory=NumericSummary)
+    tokens_summary: NumericSummary = Field(default_factory=NumericSummary)
+    reasoning_tokens_summary: NumericSummary = Field(default_factory=NumericSummary)
+    cost_summary: NumericSummary = Field(default_factory=NumericSummary)
+    grade_distribution: List[DistributionBucket] = Field(default_factory=list)
+    year_distribution: List[DistributionBucket] = Field(default_factory=list)
+    language_distribution: List[DistributionBucket] = Field(default_factory=list)
+    reasoning_mode_distribution: List[DistributionBucket] = Field(default_factory=list)
+    points_hist: Histogram = Field(default_factory=Histogram)
+    points_earned_hist: Histogram = Field(default_factory=Histogram)
+
+
 class AggregatesResponse(BaseModel):
+    subset_metrics: List[SubsetMetrics] = Field(default_factory=list)
     breakdown_by_group: Dict[str, BreakdownEntry] = Field(default_factory=dict)
     breakdown_by_year: Dict[str, BreakdownEntry] = Field(default_factory=dict)
     confusion_matrix: Dict[str, Dict[str, int]] = Field(default_factory=dict)

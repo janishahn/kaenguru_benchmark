@@ -337,6 +337,20 @@
     var savePresetBtn = $('#save-preset');
     var loadPresetBtn = $('#load-preset');
     var presetSelect = $('#preset-select');
+    var subsetSummaryBody = $('#correctness-summary tbody');
+    var subsetSummaryNote = $('#subset-summary-note');
+    var subsetToggle = $('#subset-correctness-toggle');
+    var gradeChart = $('#chart-grade-subset');
+    var pointsChart = $('#chart-points-subset');
+    var pointsEarnedChart = $('#chart-points-earned');
+    var subsetLanguageList = $('#subset-language-list');
+    var subsetReasoningList = $('#subset-reasoning-list');
+    var subsetStatsList = $('#subset-stats-list');
+    var subsetUIEnabled = Boolean(subsetSummaryBody || subsetToggle || gradeChart || pointsChart || pointsEarnedChart || subsetStatsList);
+    var subsetMetrics = [];
+    var selectedSubsetKey = null;
+    var SUBSET_TABLE_ORDER = ['all','incorrect','correct','unknown'];
+    var SUBSET_TOGGLE_ORDER = ['incorrect','correct','unknown','all'];
 
     function updatePresetSelect(){
       var presets = loadPresets();
@@ -455,6 +469,278 @@
         }
       });
       activeFilters.textContent = items.join(' · ');
+    }
+
+    function formatPercent(value){
+      if (value === null || value === undefined) return '–';
+      var numeric = Number(value);
+      if (!isFinite(numeric)) return '–';
+      return (numeric * 100).toLocaleString(undefined, { minimumFractionDigits: 1, maximumFractionDigits: 1 }) + '%';
+    }
+
+    function formatNumber(value, decimals, fallback){
+      if (value === null || value === undefined || value === '') return fallback || '–';
+      var numeric = Number(value);
+      if (!isFinite(numeric)) return fallback || '–';
+      if (decimals === undefined){
+        return numeric.toLocaleString();
+      }
+      return numeric.toLocaleString(undefined, { minimumFractionDigits: decimals, maximumFractionDigits: decimals });
+    }
+
+    function formatCurrency(value){
+      if (value === null || value === undefined || value === '') return '–';
+      var numeric = Number(value);
+      if (!isFinite(numeric)) return '–';
+      return '$' + numeric.toLocaleString(undefined, { minimumFractionDigits: 4, maximumFractionDigits: 4 });
+    }
+
+    function describeSummary(summary, decimals, options){
+      if (!summary || !summary.count){
+        return 'No data';
+      }
+      var formatter = (options && options.formatter) || function(value){ return formatNumber(value, decimals); };
+      var parts = [];
+      if (summary.mean !== null && summary.mean !== undefined){
+        var meanText = formatter(summary.mean);
+        if (meanText && meanText !== '–'){
+          parts.push('mean ' + meanText);
+        }
+      }
+      if (summary.median !== null && summary.median !== undefined){
+        var medianText = formatter(summary.median);
+        if (medianText && medianText !== '–'){
+          parts.push('median ' + medianText);
+        }
+      }
+      if (summary.p25 !== null && summary.p25 !== undefined && summary.p75 !== null && summary.p75 !== undefined){
+        var low = formatter(summary.p25);
+        var high = formatter(summary.p75);
+        if (low && high && low !== '–' && high !== '–'){
+          parts.push('p25–p75 ' + low + '…' + high);
+        }
+      }
+      if (!parts.length){
+        return 'No data';
+      }
+      return parts.join(' · ');
+    }
+
+    function renderDistributionList(element, entries){
+      if (!element) return;
+      element.innerHTML = '';
+      var list = entries || [];
+      if (!list.length){
+        var empty = document.createElement('li');
+        empty.textContent = 'No data available.';
+        element.appendChild(empty);
+        return;
+      }
+      list.forEach(function(entry){
+        var li = document.createElement('li');
+        var name = document.createElement('span');
+        name.textContent = entry && entry.label ? entry.label : 'Unknown';
+        var value = document.createElement('span');
+        var percentText = entry && entry.percentage !== undefined && entry.percentage !== null ? formatPercent(entry.percentage) : '–';
+        var countText = entry && entry.count !== undefined && entry.count !== null ? entry.count : 0;
+        value.textContent = countText + ' · ' + percentText;
+        li.appendChild(name);
+        li.appendChild(value);
+        element.appendChild(li);
+      });
+    }
+
+    function createStatItem(label, value){
+      var li = document.createElement('li');
+      var name = document.createElement('span');
+      name.textContent = label;
+      var detail = document.createElement('span');
+      detail.textContent = value;
+      li.appendChild(name);
+      li.appendChild(detail);
+      return li;
+    }
+
+    function renderSubsetStats(metric){
+      if (!subsetStatsList) return;
+      subsetStatsList.innerHTML = '';
+      if (!metric || !metric.count){
+        subsetStatsList.appendChild(createStatItem('Subset', 'No data for the current selection.'));
+        return;
+      }
+      subsetStatsList.appendChild(createStatItem('Multimodal share', formatPercent(metric.multimodal_share)));
+      subsetStatsList.appendChild(createStatItem('Points', describeSummary(metric.points_summary, 2)));
+      if (metric.points_earned_summary && metric.points_earned_summary.count){
+        subsetStatsList.appendChild(createStatItem('Points earned', describeSummary(metric.points_earned_summary, 2)));
+      } else {
+        subsetStatsList.appendChild(createStatItem('Points earned', 'No scoring data recorded.'));
+      }
+      subsetStatsList.appendChild(createStatItem('Latency', describeSummary(metric.latency_summary, 1, {
+        formatter: function(value){ return formatNumber(value, 1) + ' ms'; }
+      })));
+      subsetStatsList.appendChild(createStatItem('Total tokens', describeSummary(metric.tokens_summary, 0)));
+      subsetStatsList.appendChild(createStatItem('Cost', describeSummary(metric.cost_summary, 4, {
+        formatter: function(value){ return formatCurrency(value); }
+      })));
+    }
+
+    function findDefaultSubsetKey(metrics){
+      if (!metrics || !metrics.length) return null;
+      var order = ['incorrect', 'correct', 'all', 'unknown'];
+      for (var i = 0; i < order.length; i++){
+        var key = order[i];
+        var match = metrics.find(function(item){ return item.key === key && item.count > 0; });
+        if (match){
+          return key;
+        }
+      }
+      return metrics[0].key;
+    }
+
+    function updateSubsetSummary(){
+      if (!subsetSummaryBody) return;
+      subsetSummaryBody.innerHTML = '';
+      if (!subsetMetrics.length){
+        var emptyRow = document.createElement('tr');
+        var emptyCell = document.createElement('td');
+        emptyCell.colSpan = 10;
+        emptyCell.textContent = 'No subset statistics available for the current filters.';
+        emptyRow.appendChild(emptyCell);
+        subsetSummaryBody.appendChild(emptyRow);
+        return;
+      }
+      var totalMetric = subsetMetrics.find(function(item){ return item.key === 'all'; });
+      if (!totalMetric || !totalMetric.count){
+        var noneRow = document.createElement('tr');
+        var noneCell = document.createElement('td');
+        noneCell.colSpan = 10;
+        noneCell.textContent = 'No rows match the current filters.';
+        noneRow.appendChild(noneCell);
+        subsetSummaryBody.appendChild(noneRow);
+        return;
+      }
+      SUBSET_TABLE_ORDER.forEach(function(key){
+        var metric = subsetMetrics.find(function(item){ return item.key === key; });
+        if (!metric) return;
+        var tr = document.createElement('tr');
+        tr.dataset.key = metric.key;
+        if (metric.key === selectedSubsetKey){
+          tr.classList.add('is-active');
+        }
+        tr.innerHTML = [
+          '<td>' + metric.label + '</td>',
+          '<td>' + metric.count + '</td>',
+          '<td>' + formatPercent(metric.share) + '</td>',
+          '<td>' + formatPercent(metric.accuracy) + '</td>',
+          '<td>' + formatPercent(metric.multimodal_share) + '</td>',
+          '<td>' + formatNumber(metric.points_summary && metric.points_summary.mean, 2) + '</td>',
+          '<td>' + formatNumber(metric.points_earned_summary && metric.points_earned_summary.mean, 2) + '</td>',
+          '<td>' + formatNumber(metric.latency_summary && metric.latency_summary.median, 1) + '</td>',
+          '<td>' + formatNumber(metric.tokens_summary && metric.tokens_summary.mean, 0) + '</td>',
+          '<td>' + formatCurrency(metric.cost_summary && metric.cost_summary.mean) + '</td>'
+        ].join('');
+        tr.addEventListener('click', function(){ selectSubset(metric.key); });
+        subsetSummaryBody.appendChild(tr);
+      });
+    }
+
+    function updateSubsetToggle(){
+      if (!subsetToggle) return;
+      subsetToggle.innerHTML = '';
+      if (!subsetMetrics.length) return;
+      SUBSET_TOGGLE_ORDER.forEach(function(key){
+        var metric = subsetMetrics.find(function(item){ return item.key === key; });
+        if (!metric) return;
+        var btn = document.createElement('button');
+        btn.type = 'button';
+        btn.textContent = metric.label + ' (' + metric.count + ')';
+        if (metric.key === selectedSubsetKey){
+          btn.classList.add('is-active');
+        }
+        if (!metric.count){
+          btn.disabled = true;
+        }
+        btn.addEventListener('click', function(){ selectSubset(metric.key); });
+        subsetToggle.appendChild(btn);
+      });
+    }
+
+    function updateSubsetCharts(){
+      if (!subsetUIEnabled) return;
+      var metric = null;
+      if (selectedSubsetKey){
+        metric = subsetMetrics.find(function(item){ return item.key === selectedSubsetKey; }) || null;
+      }
+      if (!metric){
+        metric = subsetMetrics.find(function(item){ return item.key === 'all'; }) || null;
+      }
+      if (!metric){
+        if (subsetSummaryNote){
+          subsetSummaryNote.textContent = 'No subset statistics available.';
+        }
+        if (gradeChart){
+          charts.updateDistribution(gradeChart, 'subset-grade', []);
+        }
+        if (pointsChart){
+          charts.updateHistogram(pointsChart, {});
+        }
+        if (pointsEarnedChart){
+          charts.updateHistogram(pointsEarnedChart, {});
+        }
+        renderDistributionList(subsetLanguageList, []);
+        renderDistributionList(subsetReasoningList, []);
+        renderSubsetStats(null);
+        return;
+      }
+      if (subsetSummaryNote){
+        if (!metric.count){
+          subsetSummaryNote.textContent = metric.label + ': no rows for the current filters.';
+        } else {
+          subsetSummaryNote.textContent = metric.label + ' · ' + metric.count + ' rows (' + formatPercent(metric.share) + ' of filtered)';
+        }
+      }
+      if (gradeChart){
+        charts.updateDistribution(gradeChart, 'subset-grade', metric.grade_distribution || []);
+      }
+      if (pointsChart){
+        charts.updateHistogram(pointsChart, metric.points_hist || {});
+      }
+      if (pointsEarnedChart){
+        charts.updateHistogram(pointsEarnedChart, metric.points_earned_hist || {});
+      }
+      renderDistributionList(subsetLanguageList, metric.language_distribution || []);
+      renderDistributionList(subsetReasoningList, metric.reasoning_mode_distribution || []);
+      renderSubsetStats(metric);
+    }
+
+    function refreshSubsetUI(){
+      if (!subsetUIEnabled) return;
+      updateSubsetSummary();
+      updateSubsetToggle();
+      updateSubsetCharts();
+    }
+
+    function selectSubset(key){
+      if (!subsetUIEnabled) return;
+      if (!key || key === selectedSubsetKey){
+        return;
+      }
+      selectedSubsetKey = key;
+      refreshSubsetUI();
+    }
+
+    function setSubsetMetrics(metrics){
+      if (!subsetUIEnabled) return;
+      subsetMetrics = Array.isArray(metrics) ? metrics.slice() : [];
+      if (!subsetMetrics.length){
+        selectedSubsetKey = null;
+        refreshSubsetUI();
+        return;
+      }
+      if (!selectedSubsetKey || !subsetMetrics.some(function(item){ return item.key === selectedSubsetKey && item.count > 0; })){
+        selectedSubsetKey = findDefaultSubsetKey(subsetMetrics);
+      }
+      refreshSubsetUI();
     }
 
     function attachChipHandlers(){
@@ -652,6 +938,9 @@
       fetchJSON('/api/runs/' + runId + '/aggregates', buildQuery())
         .then(function(data){
           lastAggregates = data;
+          if (subsetUIEnabled){
+            setSubsetMetrics(data.subset_metrics || []);
+          }
           charts.updateBreakdown($('#chart-group'), 'chart-group', data.breakdown_by_group || {});
           charts.updateBreakdown($('#chart-year'), 'chart-year', data.breakdown_by_year || {});
           charts.updateConfusion($('#chart-confusion'), data.confusion_matrix || {});
@@ -671,6 +960,9 @@
       charts.updateHistogram($('#chart-latency'), lastAggregates.latency_hist || {});
       charts.updateHistogram($('#chart-token'), lastAggregates.tokens_hist || {});
       charts.updatePredicted($('#chart-predicted'), lastAggregates.predicted_counts || {});
+      if (subsetUIEnabled){
+        updateSubsetCharts();
+      }
     }
 
     function renderWarningList(entries){

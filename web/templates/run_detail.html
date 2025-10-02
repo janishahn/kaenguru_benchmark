@@ -48,12 +48,30 @@
       <span class="summary-label">Total known cost ($)</span>
       <span class="summary-value">{{ run.metrics.total_cost_usd_known | round(3) if run.metrics.total_cost_usd_known else '–' }}</span>
     </div>
-    <div class="summary-card">
+  <div class="summary-card">
       <span class="summary-label">Reasoning tokens</span>
       <span class="summary-value">{{ run.metrics.total_reasoning_tokens if run.metrics.total_reasoning_tokens is not none else '–' }}</span>
       {% if run.metrics.mean_reasoning_tokens is not none %}
         <span class="summary-note">Mean {{ run.metrics.mean_reasoning_tokens | round(1) }} · rows {{ run.metrics.reasoning_tokens_known_count if run.metrics.reasoning_tokens_known_count is not none else 0 }}</span>
       {% endif %}
+    </div>
+  </div>
+
+  <div class="summary-grid" id="human-baseline-cards" hidden>
+    <div class="summary-card">
+      <span class="summary-label">Human percentile</span>
+      <span class="summary-value" id="run-human-percentile">–</span>
+      <small class="summary-note" id="run-human-percentile-note"></small>
+    </div>
+    <div class="summary-card">
+      <span class="summary-label">Z-score vs humans</span>
+      <span class="summary-value" id="run-human-zscore">–</span>
+      <small class="summary-note" id="run-human-zscore-note"></small>
+    </div>
+    <div class="summary-card">
+      <span class="summary-label">LLM total / max</span>
+      <span class="summary-value" id="run-human-score">–</span>
+      <small class="summary-note" id="run-human-score-note"></small>
     </div>
   </div>
 

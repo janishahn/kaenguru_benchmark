@@ -1,0 +1,140 @@
+{% extends "base.html" %}
+{% block title %}Human Baseline{% endblock %}
+{% block content %}
+<section class="page-section humans" id="human-baseline-root" data-has-data="{{ 'true' if has_humans else 'false' }}">
+  <header class="section__header">
+    <div>
+      <h1>Human Baseline</h1>
+      <p>Compare LLM runs against the official Känguru human distributions across years and grade bands.</p>
+    </div>
+  </header>
+
+  <script type="application/json" id="human-baseline-bootstrap">{{ bootstrap | tojson }}</script>
+
+  <div id="human-baseline-empty" class="empty-state"{% if has_humans %} hidden{% endif %}>
+    <p>No human baseline data detected. Add <code>human_baseline_YYYY.json</code> files to <code>human_results/</code> using <code>extraction_format.md</code>.</p>
+  </div>
+
+  {% if has_humans %}
+  <section class="controls" id="human-baseline-controls">
+    <div class="control-grid">
+      <label>
+        <span>View</span>
+        <select id="human-view-select">
+          <option value="run">Single run</option>
+          <option value="aggregate">Cohort aggregate</option>
+        </select>
+      </label>
+      <label id="human-run-select-wrapper">
+        <span>Run</span>
+        <select id="human-run-select"></select>
+      </label>
+      <label id="human-run-multi-wrapper" hidden>
+        <span>Runs</span>
+        <select id="human-run-multi" multiple size="6"></select>
+      </label>
+      <label>
+        <span>Year</span>
+        <select id="human-year-select"></select>
+      </label>
+      <label>
+        <span>Grade / Group</span>
+        <select id="human-grade-select"></select>
+      </label>
+      <label id="human-cohort-type-wrapper" hidden>
+        <span>Cohort weighting</span>
+        <select id="human-cohort-type">
+          <option value="micro">Micro (weighted)</option>
+          <option value="macro">Macro (per run)</option>
+        </select>
+      </label>
+    </div>
+    <p class="controls__note" id="human-baseline-note"></p>
+  </section>
+
+  <section class="section" id="human-run-view" hidden>
+    <h2>Run Summary</h2>
+    <div class="summary-grid" id="human-run-summary-cards">
+      <div class="summary-card">
+        <span class="summary-label">Human percentile</span>
+        <span class="summary-value" id="human-run-percentile">–</span>
+        <small class="summary-note" id="human-run-percentile-note"></small>
+      </div>
+      <div class="summary-card">
+        <span class="summary-label">Z-score vs humans</span>
+        <span class="summary-value" id="human-run-zscore">–</span>
+        <small class="summary-note" id="human-run-zscore-note"></small>
+      </div>
+      <div class="summary-card">
+        <span class="summary-label">LLM total / max</span>
+        <span class="summary-value" id="human-run-score">–</span>
+        <small class="summary-note" id="human-run-score-note"></small>
+      </div>
+    </div>
+    <div class="table-container">
+      <table id="human-run-table">
+        <thead>
+          <tr>
+            <th>Year</th>
+            <th>Grade</th>
+            <th>LLM score</th>
+            <th>Max</th>
+            <th>Score %</th>
+            <th>Percentile</th>
+            <th>Z-score</th>
+          </tr>
+        </thead>
+        <tbody id="human-run-table-body"></tbody>
+      </table>
+    </div>
+  </section>
+
+  <section class="section" id="human-cohort-view" hidden>
+    <h2>Cohort Summary</h2>
+    <div class="table-container">
+      <table id="human-cohort-table">
+        <thead>
+          <tr>
+            <th>Year</th>
+            <th>Grade</th>
+            <th>Runs</th>
+            <th>Samples</th>
+            <th>Avg score %</th>
+            <th>Avg percentile</th>
+            <th>p25</th>
+            <th>Median</th>
+            <th>p75</th>
+            <th>Best run</th>
+            <th>Lowest run</th>
+          </tr>
+        </thead>
+        <tbody id="human-cohort-table-body"></tbody>
+      </table>
+    </div>
+  </section>
+
+  <section class="section" id="human-charts" hidden>
+    <div class="chart-grid">
+      <div class="chart-card">
+        <h3>Human CDF vs LLM</h3>
+        <div class="chart-card__canvas">
+          <div class="chart-card__surface" id="human-cdf-chart"></div>
+        </div>
+      </div>
+      <div class="chart-card">
+        <h3>Bin Share Delta</h3>
+        <div class="chart-card__canvas">
+          <div class="chart-card__surface" id="human-heatmap-chart"></div>
+        </div>
+      </div>
+      <div class="chart-card">
+        <h3>Percentile Distribution</h3>
+        <div class="chart-card__canvas">
+          <div class="chart-card__surface" id="human-percentile-chart"></div>
+        </div>
+      </div>
+    </div>
+  </section>
+  {% endif %}
+</section>
+{% endblock %}

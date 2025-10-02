@@ -681,7 +681,192 @@
           name: 'Normalized Human Score',
           type: 'line',
           yAxisIndex: 1,
-          data: normalizedScores
+      data: normalizedScores
+    }
+  ]
+};
+    this._applyOption(element.id, element, option);
+  };
+
+  DashboardCharts.prototype.updateCDF = function(element, humanSeries, markers, maxScore){
+    if (!element) return;
+    var series = Array.isArray(humanSeries) ? humanSeries.slice() : [];
+    if (!series.length){
+      this._applyOption(element.id, element, this._emptyOption('No CDF data'));
+      return;
+    }
+    var theme = currentTheme();
+    var lineData = series.map(function(point){
+      return [Number(point.score || 0), Number(point.percentile || 0) * 100];
+    });
+    var maxX = typeof maxScore === 'number' && isFinite(maxScore) ? maxScore : lineData.reduce(function(acc, value){ return Math.max(acc, value[0]); }, 0);
+    var scatterData = (markers || []).map(function(marker){
+      return {
+        value: [Number(marker.score || 0), Number(marker.percentile || 0) * 100],
+        name: marker.label || 'Run',
+      };
+    });
+    var option = {
+      color: palette(4),
+      tooltip: {
+        trigger: 'axis',
+        axisPointer: { type: 'line' },
+        formatter: function(params){
+          if (!params || !params.length) return '';
+          var entries = params.map(function(item){
+            return item.seriesName + ': ' + item.value[0].toFixed(1) + ' · ' + item.value[1].toFixed(1) + '%';
+          });
+          return entries.join('<br/>');
+        }
+      },
+      grid: { left: '10%', right: '6%', top: 40, bottom: 50, containLabel: true },
+      xAxis: {
+        type: 'value',
+        min: 0,
+        max: Math.max(maxX, 1),
+        axisLabel: { color: theme.muted },
+        splitLine: { lineStyle: { color: theme.border, opacity: 0.25 } }
+      },
+      yAxis: {
+        type: 'value',
+        min: 0,
+        max: 100,
+        axisLabel: { color: theme.muted, formatter: function(value){ return value + '%'; } },
+        splitLine: { lineStyle: { color: theme.border, opacity: 0.3 } }
+      },
+      series: [
+        {
+          name: 'Human CDF',
+          type: 'line',
+          smooth: true,
+          symbol: 'none',
+          data: lineData,
+          lineStyle: { width: 2 }
+        },
+        {
+          name: 'LLM',
+          type: 'scatter',
+          symbolSize: 12,
+          label: {
+            show: true,
+            color: theme.text,
+            formatter: function(params){ return params.name; },
+            position: 'top'
+          },
+          data: scatterData
+        }
+      ]
+    };
+    this._applyOption(element.id, element, option);
+  };
+
+  DashboardCharts.prototype.updateHeatmap = function(element, payload){
+    if (!element) return;
+    if (!payload || !payload.xLabels || !payload.xLabels.length || !payload.yLabels || !payload.yLabels.length){
+      this._applyOption(element.id, element, this._emptyOption('No heatmap data'));
+      return;
+    }
+    var data = Array.isArray(payload.values) ? payload.values : [];
+    var theme = currentTheme();
+    var maxAbs = data.reduce(function(acc, item){
+      var value = item && item.length > 2 ? Math.abs(item[2]) : 0;
+      return Math.max(acc, value);
+    }, 0);
+    if (!isFinite(maxAbs) || maxAbs === 0){
+      maxAbs = 1;
+    }
+    var option = {
+      tooltip: {
+        position: 'top',
+        formatter: function(params){
+          var grade = payload.yLabels[params.value[1]];
+          var bin = payload.xLabels[params.value[0]];
+          return grade + ' · ' + bin + ': ' + params.value[2].toFixed(2) + ' pts';
+        }
+      },
+      grid: { left: '12%', right: '6%', top: 40, bottom: 40, containLabel: true },
+      xAxis: {
+        type: 'category',
+        data: payload.xLabels,
+        axisLabel: { color: theme.text, hideOverlap: true, rotate: rotateForLabels(payload.xLabels) },
+        splitArea: { show: false },
+        splitLine: { show: false }
+      },
+      yAxis: {
+        type: 'category',
+        data: payload.yLabels,
+        axisLabel: { color: theme.text },
+        splitArea: { show: false },
+        splitLine: { show: false }
+      },
+      visualMap: {
+        min: -maxAbs,
+        max: maxAbs,
+        calculable: false,
+        orient: 'horizontal',
+        left: 'center',
+        bottom: 10,
+        inRange: { color: ['#ef4444', '#ffffff', palette(1)[0]] },
+        textStyle: { color: theme.muted }
+      },
+      series: [
+        {
+          name: 'Delta',
+          type: 'heatmap',
+          data: data,
+          label: { show: false }
+        }
+      ]
+    };
+    this._applyOption(element.id, element, option);
+  };
+
+  DashboardCharts.prototype.updateBoxViolin = function(element, data){
+    if (!element) return;
+    if (!data || !data.length){
+      this._applyOption(element.id, element, this._emptyOption('No percentile data'));
+      return;
+    }
+    var theme = currentTheme();
+    var categories = data.map(function(item){ return item.label || 'Grade'; });
+    var seriesData = data.map(function(item){
+      var stats = item.stats || {};
+      var median = Number(stats.median || 0);
+      var min = Number((stats.min !== undefined) ? stats.min : median);
+      var p25 = Number((stats.p25 !== undefined) ? stats.p25 : median);
+      var p75 = Number((stats.p75 !== undefined) ? stats.p75 : median);
+      var max = Number((stats.max !== undefined) ? stats.max : median);
+      return [min * 100, p25 * 100, median * 100, p75 * 100, max * 100];
+    });
+    var option = {
+      color: palette(1),
+      tooltip: {
+        trigger: 'item',
+        formatter: function(params){
+          if (!params || !params.value) return '';
+          var values = params.value.map(function(v){ return Number(v).toFixed(1) + '%'; });
+          return params.name + '<br/>[' + values.join(' · ') + ']';
+        }
+      },
+      grid: { left: '10%', right: '6%', top: 40, bottom: 50, containLabel: true },
+      xAxis: {
+        type: 'category',
+        data: categories,
+        axisLabel: { color: theme.text }
+      },
+      yAxis: {
+        type: 'value',
+        min: 0,
+        max: 100,
+        axisLabel: { color: theme.muted, formatter: function(value){ return value + '%'; } },
+        splitLine: { lineStyle: { color: theme.border, opacity: 0.3 } }
+      },
+      series: [
+        {
+          name: 'Percentiles',
+          type: 'boxplot',
+          data: seriesData,
+          itemStyle: { color: palette(1)[0] }
         }
       ]
     };

@@ -18,6 +18,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--models", default="models.json", help="Path to models registry JSON")
     parser.add_argument("--templates", default="web/templates", help="Template directory")
     parser.add_argument("--static", default="web/static", help="Static assets directory")
+    parser.add_argument("--human-results", default="human_results", help="Directory containing human baseline JSONs")
     parser.add_argument("--reload", action="store_true", help="Enable auto-reload (development only)")
     return parser.parse_args()
 
@@ -29,6 +30,7 @@ def main() -> None:
         models_path=Path(args.models),
         templates_dir=Path(args.templates),
         static_dir=Path(args.static),
+        human_results_dir=Path(args.human_results),
     )
     uvicorn.run(app, host=args.host, port=args.port, reload=args.reload)
 

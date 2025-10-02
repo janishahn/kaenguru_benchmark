@@ -10,8 +10,9 @@ from pathlib import Path
 from typing import Dict, List, Optional
 
 import numpy as np
-from fastapi import FastAPI, HTTPException, Query, Request, Form
+from fastapi import Body, FastAPI, HTTPException, Query, Request, Form
 from fastapi.responses import HTMLResponse, ORJSONResponse, Response
+from fastapi.responses import FileResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 import humanize
@@ -20,6 +21,11 @@ from . import schemas
 from . import analysis
 from .data_index import RunIndex, RunNotFoundError
 from .dataset_access import DatasetAccessor
+from .human_baseline import HumanBaselineIndex
+from .human_compare import (
+    compute_cohort_human_comparison,
+    compute_run_human_comparison,
+)
 
 DEFAULT_RUNS_DIR = Path("runs")
 DEFAULT_MODELS_PATH = Path("models.json")
@@ -60,6 +66,7 @@ def create_app(
     models_path: Path | str = DEFAULT_MODELS_PATH,
     templates_dir: Path | str = DEFAULT_TEMPLATE_DIR,
     static_dir: Path | str = DEFAULT_STATIC_DIR,
+    human_results_dir: Path | str = Path("human_results"),
 ) -> FastAPI:
     app = FastAPI(default_response_class=ORJSONResponse)
     runs_path = Path(runs_dir)
@@ -69,15 +76,24 @@ def create_app(
 
     index = RunIndex(runs_path, models_path)
     dataset_accessor = DatasetAccessor(human_performance_path=HUMAN_PERF_PATH)
+    humans = HumanBaselineIndex(Path(human_results_dir), strict=False)
     templates = Jinja2Templates(directory=str(templates_path))
     templates.env.filters.setdefault("intcomma", humanize.intcomma)
 
     app.state.index = index
     app.state.dataset_accessor = dataset_accessor
     app.state.templates = templates
+    app.state.humans = humans
 
     if static_path.exists():
         app.mount("/static", StaticFiles(directory=str(static_path)), name="static")
+
+    @app.get("/favicon.ico")
+    async def favicon() -> Response:
+        candidate = static_path / "assets" / "placeholder.svg"
+        if candidate.exists():
+            return FileResponse(str(candidate), media_type="image/svg+xml")
+        return RedirectResponse(url="/static/assets/placeholder.svg")
 
     def _parse_datetime(value: str) -> Optional[datetime]:
         raw = value.strip()
@@ -136,6 +152,7 @@ def create_app(
     @app.on_event("startup")
     async def _startup() -> None:
         index.reload()
+        humans.reload()
 
     @app.get("/", response_class=HTMLResponse)
     async def overview(request: Request) -> HTMLResponse:
@@ -182,6 +199,22 @@ def create_app(
     async def analysis_page(request: Request) -> HTMLResponse:
         runs = index.list_runs()
         return templates.TemplateResponse("analysis.html", {"request": request, "runs": runs})
+
+    @app.get("/humans", response_class=HTMLResponse)
+    async def humans_page(request: Request) -> HTMLResponse:
+        runs = index.list_runs()
+        years = humans.year_list()
+        bootstrap = {
+            "runs": [run.model_dump() for run in runs],
+            "years": [entry.model_dump() for entry in years],
+        }
+        context = {
+            "request": request,
+            "runs": runs,
+            "bootstrap": bootstrap,
+            "has_humans": bool(years),
+        }
+        return templates.TemplateResponse("humans.html", context)
 
     # ------------------------------------------------------------------
     # API Endpoints
@@ -271,6 +304,56 @@ def create_app(
             total_all=index.total_runs(),
             facets=facets,
         )
+
+    @app.get("/api/humans/years", response_model=List[schemas.HumanYearListEntry])
+    async def api_human_years() -> List[schemas.HumanYearListEntry]:
+        return humans.year_list()
+
+    @app.get("/api/humans/{year}/summary", response_model=schemas.HumanYearSummary)
+    async def api_human_year_summary(year: int) -> schemas.HumanYearSummary:
+        try:
+            return humans.year_summary(year)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail=str(exc))
+
+    @app.get("/api/humans/{year}/cdf", response_model=schemas.HumanCDFResponse)
+    async def api_human_cdf(year: int, grade: str = Query(..., description="Grade id")) -> schemas.HumanCDFResponse:
+        response = humans.cdf_response(year, grade)
+        if response is None:
+            raise HTTPException(status_code=404, detail="Human baseline not found for requested grade")
+        return response
+
+    @app.get("/api/humans/percentile", response_model=schemas.HumanPercentileResponse)
+    async def api_human_percentile(
+        year: int = Query(...),
+        grade: str = Query(...),
+        score: float = Query(...),
+    ) -> schemas.HumanPercentileResponse:
+        response = humans.percentile_response(year, grade, score)
+        if response is None:
+            raise HTTPException(status_code=404, detail="Human baseline not found for requested grade")
+        return response
+
+    @app.get(
+        "/api/humans/compare/run/{run_id}",
+        response_model=schemas.HumanRunComparisonResponse,
+    )
+    async def api_human_compare_run(run_id: str) -> schemas.HumanRunComparisonResponse:
+        try:
+            return compute_run_human_comparison(run_id, index, humans)
+        except RunNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc))
+
+    @app.post(
+        "/api/humans/compare/aggregate",
+        response_model=schemas.HumanCohortComparisonResponse,
+    )
+    async def api_human_compare_cohort(
+        run_ids: List[str] = Body(..., embed=True, description="Run ids to aggregate")
+    ) -> schemas.HumanCohortComparisonResponse:
+        if not run_ids:
+            raise HTTPException(status_code=400, detail="run_ids must not be empty")
+        return compute_cohort_human_comparison(run_ids, index, humans)
 
     @app.get("/api/runs/{run_id}", response_model=schemas.RunDetail)
     async def api_run_detail(run_id: str) -> schemas.RunDetail:
@@ -422,6 +505,7 @@ def create_app(
     @app.post("/api/reload")
     async def api_reload() -> Dict[str, str]:
         index.reload()
+        humans.reload()
         return {"status": "reloaded", "run_count": str(len(index.list_runs()))}
 
     return app

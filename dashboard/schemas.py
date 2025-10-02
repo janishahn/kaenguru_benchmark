@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Dict, List, Optional
+from typing import Dict, List, Literal, Optional
 
 from pydantic import BaseModel, Field, computed_field
 
@@ -314,6 +314,140 @@ class DistributionBucket(BaseModel):
     label: str
     count: int
     percentage: float
+
+
+class HumanBinRange(BaseModel):
+    min: float
+    max: float
+    inclusive: str
+
+
+class HumanBin(BaseModel):
+    id: str
+    label: str
+    range_default: HumanBinRange
+    ranges_by_grade: Dict[str, HumanBinRange] = Field(default_factory=dict)
+
+
+class HumanGradeSummary(BaseModel):
+    id: str
+    label: str
+    members: List[int] = Field(default_factory=list)
+    max_points: float
+    total_count: int
+    avg_score_reported: Optional[float] = None
+    mean_estimate: Optional[float] = None
+    stddev_estimate: Optional[float] = None
+
+
+class HumanYearSummary(BaseModel):
+    year: int
+    locale: str
+    grades: List[HumanGradeSummary] = Field(default_factory=list)
+    bins: List[HumanBin] = Field(default_factory=list)
+    counts_by_grade: Dict[str, List[int]] = Field(default_factory=dict)
+    totals_by_grade: Dict[str, int] = Field(default_factory=dict)
+    avg_score_by_grade: Dict[str, Optional[float]] = Field(default_factory=dict)
+    ui_groups: Dict[str, List[int]] = Field(default_factory=dict)
+    source: Optional[Dict[str, object]] = None
+
+
+class HumanPercentileResponse(BaseModel):
+    year: int
+    grade_id: str
+    score: float
+    max_points: float
+    percentile: Optional[float] = None
+    z_score: Optional[float] = None
+    mean_estimate: Optional[float] = None
+    stddev_estimate: Optional[float] = None
+    notes: List[str] = Field(default_factory=list)
+
+
+class HumanYearListEntry(BaseModel):
+    year: int
+    locale: str
+    grades: List[HumanGradeSummary] = Field(default_factory=list)
+    ui_groups: Dict[str, List[int]] = Field(default_factory=dict)
+
+
+class HumanCDFPoint(BaseModel):
+    score: float
+    percentile: float
+
+
+class HumanCDFResponse(BaseModel):
+    year: int
+    grade_id: str
+    max_points: float
+    mean_estimate: Optional[float] = None
+    stddev_estimate: Optional[float] = None
+    points: List[HumanCDFPoint] = Field(default_factory=list)
+
+
+class HumanBinComparison(BaseModel):
+    bin_id: str
+    human_share: float
+    llm_share: float
+    delta: float
+    llm_share_smoothed: float
+    delta_smoothed: float
+
+
+class HumanRunGradeComparison(BaseModel):
+    year: int
+    grade_id: str
+    grade_label: str
+    members: List[int] = Field(default_factory=list)
+    max_points: float
+    llm_total: float
+    llm_max: float
+    llm_score_pct: Optional[float] = None
+    human_percentile: Optional[float] = None
+    z_score: Optional[float] = None
+    human_mean: Optional[float] = None
+    human_std: Optional[float] = None
+    bin_comparison: List[HumanBinComparison] = Field(default_factory=list)
+    notes: List[str] = Field(default_factory=list)
+
+
+class HumanRunComparisonResponse(BaseModel):
+    run_id: str
+    entries: List[HumanRunGradeComparison] = Field(default_factory=list)
+    notes: List[str] = Field(default_factory=list)
+
+
+class HumanAggregateEntry(BaseModel):
+    year: int
+    grade_id: str
+    grade_label: str
+    members: List[int] = Field(default_factory=list)
+    run_count: int
+    sample_count: int
+    avg_llm_score_pct: Optional[float] = None
+    avg_human_percentile: Optional[float] = None
+    median_percentile: Optional[float] = None
+    p25_percentile: Optional[float] = None
+    p75_percentile: Optional[float] = None
+    min_percentile: Optional[float] = None
+    max_percentile: Optional[float] = None
+    avg_z_score: Optional[float] = None
+    best_run_id: Optional[str] = None
+    worst_run_id: Optional[str] = None
+    bin_comparison: List[HumanBinComparison] = Field(default_factory=list)
+    notes: List[str] = Field(default_factory=list)
+
+
+class HumanAggregateStats(BaseModel):
+    cohort_type: Literal["micro", "macro"]
+    entries: List[HumanAggregateEntry] = Field(default_factory=list)
+
+
+class HumanCohortComparisonResponse(BaseModel):
+    run_ids: List[str] = Field(default_factory=list)
+    micro: HumanAggregateStats
+    macro: HumanAggregateStats
+    notes: List[str] = Field(default_factory=list)
 
 
 class SubsetMetrics(BaseModel):

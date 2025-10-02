@@ -309,7 +309,8 @@
         page_size: 25,
         sort_by: 'id',
         sort_dir: 'asc'
-      }
+      },
+      humanComparison: null
     };
 
     var tableBody = $('#results-table tbody');
@@ -351,6 +352,13 @@
     var selectedSubsetKey = null;
     var SUBSET_TABLE_ORDER = ['all','incorrect','correct','unknown'];
     var SUBSET_TOGGLE_ORDER = ['incorrect','correct','unknown','all'];
+    var humanCards = $('#human-baseline-cards');
+    var humanPercentileValue = $('#run-human-percentile');
+    var humanPercentileNote = $('#run-human-percentile-note');
+    var humanZScoreValue = $('#run-human-zscore');
+    var humanZScoreNote = $('#run-human-zscore-note');
+    var humanScoreValue = $('#run-human-score');
+    var humanScoreNote = $('#run-human-score-note');
 
     function updatePresetSelect(){
       var presets = loadPresets();
@@ -952,6 +960,59 @@
         .catch(function(err){ console.error('Failed to load aggregates', err); });
     }
 
+    function updateHumanCards(entry){
+      if (!humanCards) return;
+      if (!entry){
+        humanCards.hidden = true;
+        return;
+      }
+      humanCards.hidden = false;
+      if (humanPercentileValue){
+        humanPercentileValue.textContent = formatPercent(entry.human_percentile);
+      }
+      if (humanPercentileNote){
+        humanPercentileNote.textContent = entry.grade_label || entry.grade_id || '';
+      }
+      if (humanZScoreValue){
+        if (entry.z_score !== null && entry.z_score !== undefined){
+          humanZScoreValue.textContent = entry.z_score.toFixed(2);
+        } else {
+          humanZScoreValue.textContent = '–';
+        }
+      }
+      if (humanZScoreNote){
+        humanZScoreNote.textContent = entry.human_std ? 'σ ≈ ' + entry.human_std.toFixed(2) : '';
+      }
+      if (humanScoreValue){
+        if (entry.llm_total !== null && entry.llm_max !== null){
+          humanScoreValue.textContent = formatNumber(entry.llm_total, 1) + ' / ' + formatNumber(entry.llm_max, 1);
+        } else {
+          humanScoreValue.textContent = '–';
+        }
+      }
+      if (humanScoreNote){
+        humanScoreNote.textContent = entry.grade_label || entry.grade_id || '';
+      }
+    }
+
+    function loadHumanComparison(){
+      fetchJSON('/api/humans/compare/run/' + runId)
+        .then(function(payload){
+          state.humanComparison = payload;
+          if (!payload || !payload.entries || !payload.entries.length){
+            updateHumanCards(null);
+            return;
+          }
+          var sorted = payload.entries.slice().sort(function(a, b){
+            var pa = a.human_percentile || 0;
+            var pb = b.human_percentile || 0;
+            return pb - pa;
+          });
+          updateHumanCards(sorted[0]);
+        })
+        .catch(function(){ updateHumanCards(null); });
+    }
+
     function rerenderCharts(){
       if (!lastAggregates) return;
       charts.updateBreakdown($('#chart-group'), 'chart-group', lastAggregates.breakdown_by_group || {});
@@ -1258,6 +1319,7 @@
     loadFailures();
     syncControls();
     refresh();
+    loadHumanComparison();
 
     document.addEventListener('dashboard:themechange', rerenderCharts);
   }
@@ -1515,11 +1577,654 @@
     }
   }
 
+  function initHumans(){
+    var root = document.getElementById('human-baseline-root');
+    if (!root) return;
+    if (root.dataset.hasData !== 'true') return;
+
+    var bootstrapEl = document.getElementById('human-baseline-bootstrap');
+    var bootstrap = { runs: [], years: [] };
+    if (bootstrapEl && bootstrapEl.textContent){
+      try {
+        bootstrap = JSON.parse(bootstrapEl.textContent);
+      } catch (err){
+        console.error('Failed to parse human baseline bootstrap', err);
+      }
+    }
+
+    var charts = new window.DashboardCharts();
+    var state = {
+      runs: bootstrap.runs || [],
+      years: bootstrap.years || [],
+      yearMap: {},
+      selectedView: 'run',
+      selectedRun: null,
+      selectedRuns: [],
+      selectedYear: null,
+      selectedGrade: null,
+      selectedCohortType: 'micro',
+      runComparisons: {},
+      cohortCache: {},
+      yearSummaryCache: {},
+      cdfCache: {},
+      percentileCache: {},
+    };
+
+    state.years.forEach(function(entry){
+      if (entry && entry.year !== undefined){
+        state.yearMap[entry.year] = entry;
+      }
+    });
+
+    var viewSelect = $('#human-view-select');
+    var runSelect = $('#human-run-select');
+    var runSelectWrapper = $('#human-run-select-wrapper');
+    var runMulti = $('#human-run-multi');
+    var runMultiWrapper = $('#human-run-multi-wrapper');
+    var yearSelect = $('#human-year-select');
+    var gradeSelect = $('#human-grade-select');
+    var cohortTypeSelect = $('#human-cohort-type');
+    var cohortTypeWrapper = $('#human-cohort-type-wrapper');
+    var noteEl = $('#human-baseline-note');
+
+    var runView = $('#human-run-view');
+    var cohortView = $('#human-cohort-view');
+    var chartsSection = $('#human-charts');
+
+    var runTableBody = $('#human-run-table-body');
+    var cohortTableBody = $('#human-cohort-table-body');
+
+    var runPercentile = $('#human-run-percentile');
+    var runPercentileNote = $('#human-run-percentile-note');
+    var runZScore = $('#human-run-zscore');
+    var runZScoreNote = $('#human-run-zscore-note');
+    var runScore = $('#human-run-score');
+    var runScoreNote = $('#human-run-score-note');
+
+    var cdfCanvas = $('#human-cdf-chart');
+    var heatmapCanvas = $('#human-heatmap-chart');
+    var percentileCanvas = $('#human-percentile-chart');
+
+    function labelForRun(run){
+      if (!run) return '';
+      return (run.model_label || run.model_id || run.run_id);
+    }
+
+    function setSelectedOption(select, value){
+      if (!select) return;
+      var has = false;
+      Array.from(select.options).forEach(function(option){
+        if (option.value === value){
+          option.selected = true;
+          has = true;
+        } else if (!select.multiple){
+          option.selected = false;
+        }
+      });
+      if (!has && select.options.length){
+        select.options[0].selected = true;
+      }
+    }
+
+    function populateRunSelectors(){
+      if (runSelect){
+        runSelect.innerHTML = '';
+      }
+      if (runMulti){
+        runMulti.innerHTML = '';
+      }
+      state.runs.forEach(function(run){
+        var label = labelForRun(run) + ' · ' + run.run_id;
+        if (runSelect){
+          var opt = document.createElement('option');
+          opt.value = run.run_id;
+          opt.textContent = label;
+          runSelect.appendChild(opt);
+        }
+        if (runMulti){
+          var optMulti = document.createElement('option');
+          optMulti.value = run.run_id;
+          optMulti.textContent = label;
+          runMulti.appendChild(optMulti);
+        }
+      });
+      if (!state.selectedRun && state.runs.length){
+        state.selectedRun = state.runs[0].run_id;
+      }
+      if (runSelect && state.selectedRun){
+        setSelectedOption(runSelect, state.selectedRun);
+      }
+    }
+
+    function populateYearSelect(){
+      if (!yearSelect) return;
+      var years = state.years.slice().sort(function(a, b){ return a.year - b.year; });
+      yearSelect.innerHTML = '';
+      years.forEach(function(entry){
+        var option = document.createElement('option');
+        option.value = String(entry.year);
+        option.textContent = String(entry.year);
+        yearSelect.appendChild(option);
+      });
+      if (!state.selectedYear && years.length){
+        state.selectedYear = years[0].year;
+      }
+      if (state.selectedYear && yearSelect.options.length){
+        setSelectedOption(yearSelect, String(state.selectedYear));
+      }
+    }
+
+    function populateGradeSelect(year){
+      if (!gradeSelect) return;
+      gradeSelect.innerHTML = '';
+      var entry = state.yearMap[year];
+      if (!entry || !entry.grades){
+        state.selectedGrade = null;
+        return;
+      }
+      entry.grades.forEach(function(grade){
+        var option = document.createElement('option');
+        option.value = grade.id;
+        option.textContent = grade.label || grade.id;
+        option.dataset.members = JSON.stringify(grade.members || []);
+        gradeSelect.appendChild(option);
+      });
+      if (!state.selectedGrade && entry.grades.length){
+        state.selectedGrade = entry.grades[0].id;
+      }
+      if (state.selectedGrade){
+        setSelectedOption(gradeSelect, state.selectedGrade);
+      }
+    }
+
+    function getSelectedRuns(){
+      if (!runMulti) return [];
+      return Array.from(runMulti.selectedOptions).map(function(opt){ return opt.value; });
+    }
+
+    function ensureCohortDefaults(){
+      if (!state.selectedRuns.length && state.runs.length){
+        state.selectedRuns = state.runs.slice(0, Math.min(3, state.runs.length)).map(function(run){ return run.run_id; });
+        if (runMulti){
+          Array.from(runMulti.options).forEach(function(opt){
+            opt.selected = state.selectedRuns.indexOf(opt.value) !== -1;
+          });
+        }
+      }
+    }
+
+    function fetchRunComparison(runId){
+      if (state.runComparisons[runId]){
+        return Promise.resolve(state.runComparisons[runId]);
+      }
+      return fetchJSON('/api/humans/compare/run/' + encodeURIComponent(runId))
+        .then(function(payload){
+          state.runComparisons[runId] = payload;
+          return payload;
+        })
+        .catch(function(err){
+          console.error('Failed to load human comparison for run', runId, err);
+          return null;
+        });
+    }
+
+    function fetchYearSummary(year){
+      if (state.yearSummaryCache[year]){
+        return Promise.resolve(state.yearSummaryCache[year]);
+      }
+      return fetchJSON('/api/humans/' + year + '/summary')
+        .then(function(payload){
+          state.yearSummaryCache[year] = payload;
+          return payload;
+        });
+    }
+
+    function fetchCdf(year, gradeId){
+      var key = year + ':' + gradeId;
+      if (state.cdfCache[key]){
+        return Promise.resolve(state.cdfCache[key]);
+      }
+      return fetchJSON('/api/humans/' + year + '/cdf', { grade: gradeId })
+        .then(function(payload){
+          state.cdfCache[key] = payload;
+          return payload;
+        });
+    }
+
+    function fetchPercentile(year, gradeId, score){
+      var key = year + ':' + gradeId + ':' + score;
+      if (state.percentileCache[key]){
+        return Promise.resolve(state.percentileCache[key]);
+      }
+      return fetchJSON('/api/humans/percentile', { year: year, grade: gradeId, score: score })
+        .then(function(payload){
+          state.percentileCache[key] = payload;
+          return payload;
+        });
+    }
+
+    function fetchCohort(runIds){
+      var key = runIds.slice().sort().join('|');
+      if (!key){
+        return Promise.resolve(null);
+      }
+      if (state.cohortCache[key]){
+        return Promise.resolve(state.cohortCache[key]);
+      }
+      return fetch('/api/humans/compare/aggregate', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ run_ids: runIds })
+      })
+        .then(function(response){
+          if (!response.ok){
+            throw new Error('Request failed: ' + response.status);
+          }
+          return response.json();
+        })
+        .then(function(payload){
+          state.cohortCache[key] = payload;
+          return payload;
+        })
+        .catch(function(err){
+          console.error('Failed to load cohort comparison', err);
+          return null;
+        });
+    }
+
+    function formatPercent(value){
+      if (value === null || value === undefined || isNaN(value)) return '–';
+      return (Number(value) * 100).toFixed(1).replace(/\.0$/, '') + '%';
+    }
+
+    function formatScore(value){
+      if (value === null || value === undefined || isNaN(value)) return '–';
+      return Number(value).toFixed(1).replace(/\.0$/, '');
+    }
+
+    function updateRunSummary(entry){
+      if (!entry){
+        runPercentile.textContent = '–';
+        runPercentileNote.textContent = '';
+        runZScore.textContent = '–';
+        runZScoreNote.textContent = '';
+        runScore.textContent = '–';
+        runScoreNote.textContent = '';
+        return;
+      }
+      if (entry.human_percentile !== null && entry.human_percentile !== undefined){
+        runPercentile.textContent = formatPercent(entry.human_percentile);
+        runPercentileNote.textContent = entry.grade_label;
+      } else {
+        runPercentile.textContent = '–';
+        runPercentileNote.textContent = 'Human percentile unavailable';
+      }
+      if (entry.z_score !== null && entry.z_score !== undefined){
+        runZScore.textContent = entry.z_score.toFixed(2);
+        runZScoreNote.textContent = entry.grade_label;
+      } else {
+        runZScore.textContent = '–';
+        runZScoreNote.textContent = 'Human variance unavailable';
+      }
+      if (entry.llm_total !== null && entry.llm_max !== null){
+        runScore.textContent = formatScore(entry.llm_total) + ' / ' + formatScore(entry.llm_max);
+        runScoreNote.textContent = entry.grade_label;
+      } else {
+        runScore.textContent = '–';
+        runScoreNote.textContent = '';
+      }
+    }
+
+    function renderRunTable(runData){
+      if (!runTableBody) return;
+      runTableBody.innerHTML = '';
+      if (!runData || !runData.entries){
+        return;
+      }
+      runData.entries.forEach(function(entry){
+        var tr = document.createElement('tr');
+        tr.innerHTML = [
+          '<td>' + entry.year + '</td>',
+          '<td>' + (entry.grade_label || entry.grade_id) + '</td>',
+          '<td>' + formatScore(entry.llm_total) + '</td>',
+          '<td>' + formatScore(entry.llm_max) + '</td>',
+          '<td>' + formatPercent(entry.llm_score_pct) + '</td>',
+          '<td>' + formatPercent(entry.human_percentile) + '</td>',
+          '<td>' + (entry.z_score !== null && entry.z_score !== undefined ? entry.z_score.toFixed(2) : '–') + '</td>'
+        ].join('');
+        runTableBody.appendChild(tr);
+      });
+    }
+
+    function buildHeatmapData(entries, label){
+      if (!entries || !entries.length) return null;
+      var entry = entries[0];
+      var labels = entry.bin_comparison.map(function(item){ return item.bin_id; });
+      var values = entry.bin_comparison.map(function(item, idx){
+        return [idx, 0, Number(item.delta_smoothed || item.delta || 0) * 100];
+      });
+      return {
+        xLabels: labels,
+        yLabels: [label],
+        values: values,
+      };
+    }
+
+    function updateRunCharts(runData, entry){
+      if (!entry){
+        charts.updateCDF(cdfCanvas, [], [], 0);
+        charts.updateHeatmap(heatmapCanvas, { xLabels: [], yLabels: [], values: [] });
+        charts.updateBoxViolin(percentileCanvas, []);
+        chartsSection.hidden = true;
+        return;
+      }
+      var year = entry.year;
+      var gradeId = entry.grade_id;
+      Promise.all([
+        fetchYearSummary(year),
+        fetchCdf(year, gradeId),
+        (entry.human_percentile === null || entry.human_percentile === undefined)
+          ? fetchPercentile(year, gradeId, entry.llm_total)
+          : Promise.resolve(null)
+      ]).then(function(results){
+        var yearSummary = results[0];
+        var cdf = results[1];
+        var percentileOverride = results[2];
+        if (percentileOverride && percentileOverride.percentile !== undefined){
+          entry.human_percentile = percentileOverride.percentile;
+        }
+
+        var markers = [];
+        if (entry.human_percentile !== null && entry.human_percentile !== undefined){
+          markers.push({
+            label: labelForRun(state.runs.find(function(run){ return run.run_id === runData.run_id; })),
+            score: entry.llm_total,
+            percentile: entry.human_percentile,
+          });
+        }
+
+        charts.updateCDF(
+          cdfCanvas,
+          (cdf && cdf.points) ? cdf.points.map(function(point){
+            return { score: point.score, percentile: point.percentile };
+          }) : [],
+          markers,
+          yearSummary && yearSummary.grades ? entry.max_points : entry.llm_max
+        );
+
+        var heatmapData = buildHeatmapData([entry], entry.grade_label || entry.grade_id);
+        charts.updateHeatmap(heatmapCanvas, heatmapData);
+        charts.updateBoxViolin(percentileCanvas, []);
+        chartsSection.hidden = false;
+      }).catch(function(err){
+        console.error('Failed to update run charts', err);
+        chartsSection.hidden = false;
+      });
+    }
+
+    function renderRunView(){
+      if (!state.selectedRun){
+        runView.hidden = true;
+        return;
+      }
+      runView.hidden = false;
+      var comparison = state.runComparisons[state.selectedRun];
+      if (!comparison || !comparison.entries || !comparison.entries.length){
+        noteEl.textContent = 'No baseline data available for this run.';
+        renderRunTable(null);
+        updateRunSummary(null);
+        updateRunCharts(null, null);
+        return;
+      }
+      var yearsInRun = comparison.entries.map(function(entry){ return entry.year; });
+      if (!state.selectedYear || yearsInRun.indexOf(state.selectedYear) === -1){
+        state.selectedYear = yearsInRun[0];
+        if (yearSelect){
+          setSelectedOption(yearSelect, String(state.selectedYear));
+        }
+      }
+      populateGradeSelect(state.selectedYear);
+      var entriesForYear = comparison.entries.filter(function(entry){ return entry.year === state.selectedYear; });
+      if (!state.selectedGrade || !entriesForYear.some(function(entry){ return entry.grade_id === state.selectedGrade; })){
+        state.selectedGrade = entriesForYear.length ? entriesForYear[0].grade_id : null;
+        if (gradeSelect && state.selectedGrade){
+          setSelectedOption(gradeSelect, state.selectedGrade);
+        }
+      }
+      var selectedEntry = entriesForYear.find(function(entry){ return entry.grade_id === state.selectedGrade; }) || entriesForYear[0];
+      if (selectedEntry){
+        state.selectedGrade = selectedEntry.grade_id;
+      }
+      noteEl.textContent = selectedEntry ? ('Run ' + state.selectedRun + ' · ' + (selectedEntry.grade_label || selectedEntry.grade_id)) : '';
+      renderRunTable(comparison);
+      updateRunSummary(selectedEntry);
+      updateRunCharts(comparison, selectedEntry);
+    }
+
+    function computeHeatmapValues(entry){
+      if (!entry) return null;
+      return buildHeatmapData([entry], entry.grade_label || entry.grade_id);
+    }
+
+    function renderCohortTable(entries){
+      if (!cohortTableBody) return;
+      cohortTableBody.innerHTML = '';
+      if (!entries){
+        return;
+      }
+      entries.forEach(function(entry){
+        var tr = document.createElement('tr');
+        tr.innerHTML = [
+          '<td>' + entry.year + '</td>',
+          '<td>' + (entry.grade_label || entry.grade_id) + '</td>',
+          '<td>' + entry.run_count + '</td>',
+          '<td>' + entry.sample_count + '</td>',
+          '<td>' + formatPercent(entry.avg_llm_score_pct) + '</td>',
+          '<td>' + formatPercent(entry.avg_human_percentile) + '</td>',
+          '<td>' + formatPercent(entry.p25_percentile) + '</td>',
+          '<td>' + formatPercent(entry.median_percentile) + '</td>',
+          '<td>' + formatPercent(entry.p75_percentile) + '</td>',
+          '<td>' + (entry.best_run_id || '–') + '</td>',
+          '<td>' + (entry.worst_run_id || '–') + '</td>'
+        ].join('');
+        cohortTableBody.appendChild(tr);
+      });
+    }
+
+    function updateCohortCharts(entries, markers){
+      if (!entries || !entries.length){
+        charts.updateCDF(cdfCanvas, [], [], 0);
+        charts.updateHeatmap(heatmapCanvas, { xLabels: [], yLabels: [], values: [] });
+        charts.updateBoxViolin(percentileCanvas, []);
+        chartsSection.hidden = true;
+        return;
+      }
+      var entry = entries[0];
+      var year = entry.year;
+      var gradeId = entry.grade_id;
+      Promise.all([
+        fetchYearSummary(year),
+        fetchCdf(year, gradeId)
+      ]).then(function(results){
+        var cdf = results[1];
+        charts.updateCDF(
+          cdfCanvas,
+          (cdf && cdf.points) ? cdf.points.map(function(point){ return { score: point.score, percentile: point.percentile }; }) : [],
+          markers || [],
+          entry.max_points
+        );
+        var heatmapData = buildHeatmapData(entries, entry.grade_label || entry.grade_id);
+        charts.updateHeatmap(heatmapCanvas, heatmapData);
+
+        var boxData = [];
+        entries.forEach(function(item){
+          if (item.median_percentile !== null && item.median_percentile !== undefined){
+            boxData.push({
+              label: item.grade_label || item.grade_id,
+              stats: {
+                min: item.min_percentile !== null && item.min_percentile !== undefined ? item.min_percentile : item.median_percentile,
+                p25: item.p25_percentile !== null && item.p25_percentile !== undefined ? item.p25_percentile : item.median_percentile,
+                median: item.median_percentile,
+                p75: item.p75_percentile !== null && item.p75_percentile !== undefined ? item.p75_percentile : item.median_percentile,
+                max: item.max_percentile !== null && item.max_percentile !== undefined ? item.max_percentile : item.median_percentile,
+              }
+            });
+          }
+        });
+        charts.updateBoxViolin(percentileCanvas, boxData);
+        chartsSection.hidden = false;
+      }).catch(function(err){
+        console.error('Failed to update cohort charts', err);
+        chartsSection.hidden = false;
+      });
+    }
+
+    function renderCohortView(){
+      ensureCohortDefaults();
+      var runIds = state.selectedRuns.slice();
+      if (!runIds.length){
+        cohortView.hidden = true;
+        chartsSection.hidden = true;
+        return;
+      }
+      cohortView.hidden = false;
+      runMultiWrapper.hidden = false;
+      cohortTypeWrapper.hidden = false;
+      var key = runIds.slice().sort().join('|');
+      fetchCohort(runIds).then(function(payload){
+        if (!payload){
+          renderCohortTable([]);
+          chartsSection.hidden = true;
+          return;
+        }
+        var cohortStats = (state.selectedCohortType === 'macro') ? payload.macro : payload.micro;
+        var entries = cohortStats.entries || [];
+        if (!entries.length){
+          renderCohortTable([]);
+          chartsSection.hidden = true;
+          return;
+        }
+        if (!state.selectedYear || !entries.some(function(entry){ return entry.year === state.selectedYear; })){
+          state.selectedYear = entries[0].year;
+          if (yearSelect){
+            setSelectedOption(yearSelect, String(state.selectedYear));
+          }
+          populateGradeSelect(state.selectedYear);
+        }
+        var filteredEntries = entries.filter(function(entry){ return entry.year === state.selectedYear; });
+        if (!state.selectedGrade || !filteredEntries.some(function(entry){ return entry.grade_id === state.selectedGrade; })){
+          state.selectedGrade = filteredEntries.length ? filteredEntries[0].grade_id : null;
+          if (gradeSelect && state.selectedGrade){
+            setSelectedOption(gradeSelect, state.selectedGrade);
+          }
+        }
+        var selectedEntries = filteredEntries.filter(function(entry){ return entry.grade_id === state.selectedGrade; });
+        noteEl.textContent = state.selectedGrade ? ('Cohort · ' + (selectedEntries[0] ? (selectedEntries[0].grade_label || selectedEntries[0].grade_id) : state.selectedGrade)) : '';
+        renderCohortTable(filteredEntries);
+
+        Promise.all(runIds.map(fetchRunComparison)).then(function(){
+          var markers = [];
+          runIds.forEach(function(runId){
+            var comparison = state.runComparisons[runId];
+            if (!comparison || !comparison.entries) return;
+            var entry = comparison.entries.find(function(item){ return item.year === state.selectedYear && item.grade_id === state.selectedGrade; });
+            if (entry && entry.human_percentile !== null && entry.human_percentile !== undefined){
+              markers.push({
+                label: labelForRun(state.runs.find(function(run){ return run.run_id === runId; })),
+                score: entry.llm_total,
+                percentile: entry.human_percentile,
+              });
+            }
+          });
+          updateCohortCharts(selectedEntries, markers);
+        });
+      });
+    }
+
+    function updateView(){
+      var isRunView = state.selectedView === 'run';
+      if (runSelectWrapper) runSelectWrapper.hidden = !isRunView;
+      if (runView) runView.hidden = !isRunView;
+      if (runMultiWrapper) runMultiWrapper.hidden = isRunView;
+      if (cohortTypeWrapper) cohortTypeWrapper.hidden = isRunView;
+      if (cohortView) cohortView.hidden = isRunView;
+      if (percentileCanvas) percentileCanvas.parentElement.parentElement.parentElement.style.display = isRunView ? 'none' : '';
+      if (isRunView){
+        if (!state.selectedRun && state.runs.length){
+          state.selectedRun = state.runs[0].run_id;
+          if (runSelect){
+            setSelectedOption(runSelect, state.selectedRun);
+          }
+        }
+        if (state.selectedRun){
+          fetchRunComparison(state.selectedRun).then(function(){ renderRunView(); });
+        }
+      } else {
+        ensureCohortDefaults();
+        renderCohortView();
+      }
+    }
+
+    if (viewSelect){
+      viewSelect.addEventListener('change', function(){
+        state.selectedView = this.value;
+        updateView();
+      });
+    }
+    if (runSelect){
+      runSelect.addEventListener('change', function(){
+        state.selectedRun = this.value;
+        updateView();
+      });
+    }
+    if (runMulti){
+      runMulti.addEventListener('change', function(){
+        state.selectedRuns = getSelectedRuns();
+        renderCohortView();
+      });
+    }
+    if (yearSelect){
+      yearSelect.addEventListener('change', function(){
+        state.selectedYear = parseInt(this.value, 10);
+        populateGradeSelect(state.selectedYear);
+        if (state.selectedView === 'run'){
+          renderRunView();
+        } else {
+          renderCohortView();
+        }
+      });
+    }
+    if (gradeSelect){
+      gradeSelect.addEventListener('change', function(){
+        state.selectedGrade = this.value;
+        if (state.selectedView === 'run'){
+          renderRunView();
+        } else {
+          renderCohortView();
+        }
+      });
+    }
+    if (cohortTypeSelect){
+      cohortTypeSelect.addEventListener('change', function(){
+        state.selectedCohortType = this.value;
+        renderCohortView();
+      });
+    }
+
+    populateRunSelectors();
+    populateYearSelect();
+    if (state.selectedYear){
+      populateGradeSelect(state.selectedYear);
+    }
+    updateView();
+  }
+
   document.addEventListener('DOMContentLoaded', function(){
     initThemeToggle();
     initOverview();
     initRunDetail();
     initCompare();
+    initHumans();
     initAnalysis();
   });
 })();

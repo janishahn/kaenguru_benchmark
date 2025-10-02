@@ -91,12 +91,14 @@ Dashboard
 - Open `http://127.0.0.1:8000` in a browser. The UI works entirely offline; all JS/CSS dependencies are vendored.
 - Overview page: cards summarize every run (accuracy badges, answered/skipped counts, latency/tokens averages). Failures and unknown-usage are surfaced as warning chips. Use the Compare button to pre-fill selectors on the compare page.
 - Run detail: filter sidebar (group, year, language, multimodal, correctness, reasoning mode, value ranges, warnings) drives server-side pagination and charts. Presets are stored in `localStorage`. Charts (group/year breakdowns, confusion matrix, latency/tokens histograms, predicted-letter distribution) update with the active filters. Click a row to open the drawer with dataset content (problem, answer choices, images, rationale text, warnings); a toggle reveals the raw model response when present. The issues panel surfaces top warning types and the failures timeline, with deep links back to affected ids.
+- When human baselines are available, the run detail header surfaces the best human percentile/z-score and the dashboard exposes an aggregate comparison page.
 - Compare page: pick two runs to view metric deltas, group/year delta bars, and a per-id diff table. The view selector can restrict to changed/improved/regressed rows; optional limit caps the diff table size. Enable the confusion-matrix toggle to preview both runs' confusion matrices side by side.
 - **Scientific Analysis page**: A new page for advanced analysis across multiple runs.
   - **Usage**: Navigate to the "Analysis" tab, select one or more runs from the checkbox list, and click "Analyze".
   - **Human vs. LLM Difficulty**: A scatter plot that correlates the average LLM performance on a question with human performance. This requires a `human_performance.parquet` file in the project root (see below).
   - **Normalized Performance**: A bar chart showing raw average human and LLM scores per year, plus a normalized score (`Human Score / LLM Score`) to track relative performance over time.
   - **Performance by Tag**: A table that breaks down performance by question tags (e.g., "geometry", "algebra"), if a `tags` column is present in the dataset.
+- **Human Baseline page**: Select a run or cohort of runs to compare against the yearly human distributions (CDF overlay, bin-delta heatmap, cohort percentile boxplot). Requires the JSON baselines described in `extraction_format.md`.
 - Export buttons on the run detail page respect current filters: CSV or JSON downloads via `/api/runs/{id}/results?download={csv|json}`. Filters, sorts, and pagination are all encoded into the request.
 - Reload when new run folders appear: `curl -X POST http://127.0.0.1:8000/api/reload` (or use any HTTP client). The index rebuild is fast and re-populates filter facets.
 - Known limitations: designed for single-user, local usage (no authentication); very large runs may still take a few seconds to stream filters/aggregates; the vendored chart shim supports only the dashboard’s built-in visualisations.
@@ -108,6 +110,7 @@ You can customize the dashboard's behavior with these command-line arguments:
 - `--models PATH`: Path to `models.json` (default: `models.json`).
 - `--templates PATH`: Template directory (default: `web/templates`).
 - `--static PATH`: Static assets directory (default: `web/static`).
+- `--human-results PATH`: Directory containing extracted human baseline JSONs (default: `human_results`).
 - `--reload`: Enable auto-reload for development.
 
 ### Human Performance Data (Optional)
@@ -119,6 +122,16 @@ To enable human vs. LLM analysis, you can provide a `human_performance.parquet` 
   - `question_id` (string): The ID of the question, matching the main dataset.
   - `p_correct` (float): The proportion of human students who answered the question correctly (e.g., 0.75 for 75%).
   - `sample_size` (integer): The number of students in the sample.
+
+### Human Baseline JSONs (Optional but recommended)
+
+To enable the dedicated "Human Baseline" dashboard page and the human percentile cards on the run detail view, add per-year JSON files extracted from the official Känguru PDF summaries.
+
+- **Location**: Place the files in the directory passed via `--human-results` (defaults to `human_results/`). Each file must follow the naming convention `human_baseline_YYYY.json`.
+- **Schema**: See `extraction_format.md` (schema version `2.0`) for the exact structure. It supports years where early grades are grouped (e.g., `3/4`, `5/6`) and years where grades are listed individually, including the grade-specific scoring maxima.
+- **Partial coverage**: Missing years are tolerated—only the available years/grades appear in the UI selectors. Data can be added incrementally; use `/api/reload` or restart the server to pick up new files.
+
+Once the JSONs are in place, open the "Human Baseline" page to explore single-run comparisons, cohort aggregates (micro/macro), CDF overlays, bin-delta heatmaps, and percentile boxplots.
 
 Notes
 

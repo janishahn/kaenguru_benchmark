@@ -119,6 +119,17 @@ def compute_run_human_comparison(
 
         bin_comparison = _build_bin_comparison(human_year, grade_stats, llm_total)
 
+        member_overrides: Dict[str, schemas.HumanMemberComparison] = {}
+        member_grade_ids = _member_grade_ids_for_stats(human_year, grade_stats, grade_id)
+        for member_grade_id in member_grade_ids:
+            try:
+                member_grade = human_year.grade(member_grade_id)
+            except KeyError:
+                if member_grade_id != grade_id:
+                    continue
+                member_grade = grade_stats
+            member_overrides[member_grade_id] = _build_member_override(member_grade, llm_total)
+
         entries.append(
             schemas.HumanRunGradeComparison(
                 year=year,
@@ -139,6 +150,7 @@ def compute_run_human_comparison(
                 human_best=grade_stats.best_score_estimate,
                 bin_comparison=bin_comparison,
                 notes=[],
+                member_overrides=member_overrides,
             )
         )
 
@@ -297,6 +309,10 @@ def _aggregate_group(
     percentiles_weighted: List[Tuple[float, float]] = []
     score_pcts: List[float] = []
     score_pcts_weighted: List[Tuple[float, float]] = []
+    human_mean_pcts: List[float] = []
+    human_mean_pcts_weighted: List[Tuple[float, float]] = []
+    human_best_pcts: List[float] = []
+    human_best_pcts_weighted: List[Tuple[float, float]] = []
     z_scores: List[float] = []
     z_scores_weighted: List[Tuple[float, float]] = []
     best_candidate: Optional[Tuple[str, float]] = None
@@ -305,6 +321,7 @@ def _aggregate_group(
 
     raw_share_matrix: List[List[float]] = []
     smooth_share_matrix: List[List[float]] = []
+    member_samples: Dict[str, List[Tuple[str, schemas.HumanMemberComparison]]] = defaultdict(list)
 
     for run_id, entry in samples:
         weight = entry.llm_max if entry.llm_max > 0 else 1.0
@@ -318,6 +335,16 @@ def _aggregate_group(
         if entry.llm_score_pct is not None:
             score_pcts.append(entry.llm_score_pct)
             score_pcts_weighted.append((entry.llm_score_pct, weight))
+        if entry.human_mean is not None and entry.llm_max:
+            human_mean_pct = entry.human_mean / entry.llm_max if entry.llm_max > 0 else None
+            if human_mean_pct is not None:
+                human_mean_pcts.append(human_mean_pct)
+                human_mean_pcts_weighted.append((human_mean_pct, weight))
+        if entry.human_best is not None and entry.llm_max:
+            human_best_pct = entry.human_best / entry.llm_max if entry.llm_max > 0 else None
+            if human_best_pct is not None:
+                human_best_pcts.append(human_best_pct)
+                human_best_pcts_weighted.append((human_best_pct, weight))
         if entry.z_score is not None:
             z_scores.append(entry.z_score)
             z_scores_weighted.append((entry.z_score, weight))
@@ -325,12 +352,17 @@ def _aggregate_group(
         smooth_share_matrix.append([bin_entry.llm_share_smoothed for bin_entry in entry.bin_comparison])
         if entry.notes:
             notes.extend(entry.notes)
+        if entry.member_overrides:
+            for member_id, override in entry.member_overrides.items():
+                member_samples[member_id].append((run_id, override))
 
     weights = [entry.llm_max if entry.llm_max > 0 else 1.0 for _, entry in samples]
     use_weights = weight_mode == "micro" and any(weight > 0 for weight in weights)
 
     avg_score_pct = _average(score_pcts_weighted if use_weights else score_pcts)
     avg_percentile = _average(percentiles_weighted if use_weights else percentiles)
+    avg_human_mean_pct = _average(human_mean_pcts_weighted if use_weights else human_mean_pcts)
+    avg_human_best_pct = _average(human_best_pcts_weighted if use_weights else human_best_pcts)
     avg_z = _average(z_scores_weighted if use_weights else z_scores)
 
     median_percentile, p25_percentile, p75_percentile = _percentile_stats(percentiles)
@@ -365,6 +397,8 @@ def _aggregate_group(
         run_count=run_count,
         sample_count=sample_count,
         avg_llm_score_pct=avg_score_pct,
+        avg_human_mean_pct=avg_human_mean_pct,
+        avg_human_best_pct=avg_human_best_pct,
         avg_human_percentile=avg_percentile,
         median_percentile=median_percentile,
         p25_percentile=p25_percentile,
@@ -376,6 +410,11 @@ def _aggregate_group(
         worst_run_id=worst_candidate[0] if worst_candidate else None,
         bin_comparison=bin_entries,
         notes=sorted(set(notes)),
+        member_overrides=_aggregate_member_overrides(
+            human_year,
+            grade_stats,
+            member_samples,
+        ),
     )
 
 
@@ -421,6 +460,87 @@ def _average_matrix(matrix: Sequence[Sequence[float]], weights: Optional[Sequenc
         else:
             result.append(0.0)
     return result
+
+
+def _member_grade_ids_for_stats(
+    human_year: HumanYear,
+    grade_stats: HumanGradeStats,
+    grade_id: str,
+) -> List[str]:
+    member_grade_ids: List[str] = []
+    for member in grade_stats.members:
+        for candidate_id in human_year.grade_ids():
+            candidate = human_year.grade(candidate_id)
+            if len(candidate.members) == 1 and candidate.members[0] == member:
+                member_grade_ids.append(candidate_id)
+                break
+    if not member_grade_ids:
+        member_grade_ids.append(grade_id)
+    return member_grade_ids
+
+
+def _build_member_override(grade: HumanGradeStats, score: float) -> schemas.HumanMemberComparison:
+    return schemas.HumanMemberComparison(
+        grade_id=grade.id,
+        grade_label=grade.label,
+        members=list(grade.members),
+        max_points=grade.max_points,
+        total_count=grade.total_count,
+        human_mean=grade.mean_estimate,
+        human_std=grade.stddev_estimate,
+        human_best=grade.best_score_estimate,
+        human_percentile=grade.percentile(score),
+        z_score=grade.z_score(score),
+    )
+
+
+def _aggregate_member_overrides(
+    human_year: HumanYear,
+    grade_stats: HumanGradeStats,
+    member_samples: Dict[str, List[Tuple[str, schemas.HumanMemberComparison]]],
+) -> Dict[str, schemas.HumanMemberComparison]:
+    member_overrides: Dict[str, schemas.HumanMemberComparison] = {}
+    member_grade_ids = _member_grade_ids_for_stats(human_year, grade_stats, grade_stats.id)
+    for member_grade_id in member_grade_ids:
+        try:
+            member_grade = human_year.grade(member_grade_id)
+        except KeyError:
+            if member_grade_id != grade_stats.id:
+                continue
+            member_grade = grade_stats
+
+        samples = member_samples.get(member_grade_id, [])
+        percentiles = [ov.human_percentile for _, ov in samples if ov.human_percentile is not None]
+        z_scores = [ov.z_score for _, ov in samples if ov.z_score is not None]
+
+        member_overrides[member_grade_id] = schemas.HumanMemberComparison(
+            grade_id=member_grade_id,
+            grade_label=member_grade.label,
+            members=list(member_grade.members),
+            max_points=member_grade.max_points,
+            total_count=member_grade.total_count,
+            human_mean=member_grade.mean_estimate,
+            human_std=member_grade.stddev_estimate,
+            human_best=member_grade.best_score_estimate,
+            human_percentile=_average(percentiles),
+            z_score=_average(z_scores),
+        )
+
+    if not member_overrides:
+        member_overrides[grade_stats.id] = schemas.HumanMemberComparison(
+            grade_id=grade_stats.id,
+            grade_label=grade_stats.label,
+            members=list(grade_stats.members),
+            max_points=grade_stats.max_points,
+            total_count=grade_stats.total_count,
+            human_mean=grade_stats.mean_estimate,
+            human_std=grade_stats.stddev_estimate,
+            human_best=grade_stats.best_score_estimate,
+            human_percentile=None,
+            z_score=None,
+        )
+
+    return member_overrides
 
 
 def _parse_year(value: Optional[str]) -> Optional[int]:

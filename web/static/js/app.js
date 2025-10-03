@@ -1649,10 +1649,15 @@
       selectedComparisonSource: 'average', // 'average' or 'best'
       aggregationStrategy: 'best',
       runComparisons: {},
+      runSummaries: {},
       cohortCache: {},
+      cohortSummaries: {},
       yearSummaryCache: {},
       cdfCache: {},
       percentileCache: {},
+      baselineSummaries: {},
+      currentRunSummary: null,
+      currentRunSummaryKey: null,
     };
 
     state.years.forEach(function(entry){
@@ -1678,6 +1683,11 @@
     var cohortTypeWrapper = $('#human-cohort-type-wrapper');
     var comparisonSourceToggle = $('#human-comparison-source');
     var noteEl = $('#human-baseline-note');
+    var baselineSection = $('#human-baseline-highlights');
+    var baselineBestYear = $('#baseline-best-year');
+    var baselineBestYearNote = $('#baseline-best-year-note');
+    var baselineBestGrade = $('#baseline-best-grade');
+    var baselineBestGradeNote = $('#baseline-best-grade-note');
 
     var runView = $('#human-run-view');
     var cohortView = $('#human-cohort-view');
@@ -1690,6 +1700,18 @@
     var runPercentileNote = $('#human-run-percentile-note');
     var runZScore = $('#human-run-zscore');
     var runZScoreNote = $('#human-run-zscore-note');
+
+    var statsTotal = $('#stats-total');
+    var statsLlmWins = $('#stats-llm-wins');
+    var statsHumanWins = $('#stats-human-wins');
+    var statsAvgPercentile = $('#stats-avg-percentile');
+    var statsBestYear = $('#stats-best-year');
+    var statsBestGrade = $('#stats-best-grade');
+
+    var statsThresholds = $('#stats-thresholds');
+    var runToplists = $('#human-run-toplists');
+    var topLlmWinsList = $('#top-llm-wins');
+    var topHumanWinsList = $('#top-human-wins');
 
     var cdfCanvas = $('#human-cdf-chart');
     var heatmapCanvas = $('#human-heatmap-chart');
@@ -1775,6 +1797,214 @@
       }
     }
 
+    function toGradeNumber(value){
+      var num = parseInt(value, 10);
+      return isNaN(num) ? null : num;
+    }
+
+    function parseGradeKeyMembers(key){
+      if (!key) return [];
+      var text = String(key).trim();
+      if (!text) return [];
+      text = text
+        .replace(/^_range_aggregated_/, '')
+        .replace(/_(best|average)$/i, '')
+        .replace(/[\s]/g, '')
+        .replace(/[\/]/g, '-')
+        .replace(/\u2013/g, '-');
+      var rangeMatch = text.match(/^(-?\d+)-(-?\d+)$/);
+      if (rangeMatch){
+        var start = parseInt(rangeMatch[1], 10);
+        var end = parseInt(rangeMatch[2], 10);
+        if (!isNaN(start) && !isNaN(end)){
+          var members = [];
+          if (start <= end){
+            for (var i = start; i <= end; i++) members.push(i);
+          } else {
+            for (var j = start; j >= end; j--) members.push(j);
+          }
+          return members;
+        }
+      }
+      var single = parseInt(text, 10);
+      if (!isNaN(single)){
+        return [single];
+      }
+      var matches = text.match(/\d+/g);
+      if (!matches) return [];
+      if (matches.length >= 2){
+        var first = parseInt(matches[0], 10);
+        var second = parseInt(matches[1], 10);
+        if (!isNaN(first) && !isNaN(second)){
+          var nums = [];
+          if (first <= second){
+            for (var k = first; k <= second; k++) nums.push(k);
+          } else {
+            for (var m = first; m >= second; m--) nums.push(m);
+          }
+          return nums;
+        }
+      }
+      var unique = new Set();
+      matches.forEach(function(token){
+        var value = parseInt(token, 10);
+        if (!isNaN(value)){
+          unique.add(value);
+        }
+      });
+      return Array.from(unique).sort(function(a, b){ return a - b; });
+    }
+
+    function getEntryMembers(entry){
+      if (!entry) return [];
+      if (Array.isArray(entry.members) && entry.members.length){
+        return entry.members
+          .map(function(value){ return Number(value); })
+          .filter(function(num){ return !isNaN(num); })
+          .sort(function(a, b){ return a - b; });
+      }
+      return parseGradeKeyMembers(entry.grade_label || entry.grade_id);
+    }
+
+    function entryHasGrade(entry, gradeValue){
+      var gradeNumber = toGradeNumber(gradeValue);
+      if (gradeNumber === null) return false;
+      var members = getEntryMembers(entry);
+      return members.some(function(member){ return member === gradeNumber; });
+    }
+
+    function buildGradeDisplay(entry, gradeValue, year){
+      if (!entry){
+        return { primary: '–', meta: null };
+      }
+      var members = getEntryMembers(entry);
+      var metaParts = [];
+
+      if (gradeValue !== null && entryHasGrade(entry, gradeValue)){
+        var primary = 'Grade ' + gradeValue;
+        var sourceLabel = entry.grade_label || entry.grade_id;
+
+        var yearInfo = year ? state.yearMap[year] : null;
+        var directGradeLabel = null;
+        if (yearInfo && Array.isArray(yearInfo.grades)){
+          var directGrade = yearInfo.grades.find(function(g){ return g && g.id === String(gradeValue); });
+          if (directGrade && directGrade.label){
+            directGradeLabel = directGrade.label;
+          }
+        }
+
+        if (directGradeLabel){
+          metaParts.push('Human baseline: Grade ' + directGradeLabel);
+        } else if (sourceLabel){
+          var cleaned = String(sourceLabel).split('(')[0].trim();
+          if (cleaned){
+            metaParts.push('Human baseline: ' + cleaned);
+          }
+        }
+
+        if (!directGradeLabel && entry.grade_id && entry.grade_id.startsWith('_range_aggregated_')){
+          metaParts.push('Strategy: ' + (state.aggregationStrategy === 'best' ? 'best-of-range' : 'average-of-range'));
+        }
+        if (!directGradeLabel && members.length > 1){
+          metaParts.push('Covers ' + members.join('-'));
+        }
+        return { primary: primary, meta: metaParts.length ? metaParts.join(' • ') : null };
+      }
+
+      var fallbackLabel = entry.grade_label || entry.grade_id || '–';
+      if (members.length > 1){
+        metaParts.push('Covers ' + members.join('-'));
+      }
+      return { primary: fallbackLabel, meta: metaParts.length ? metaParts.join(' • ') : null };
+    }
+
+    function deriveGradeMetrics(entry, gradeValue){
+      var gradeKey = gradeValue !== null ? String(gradeValue) : null;
+      var overrides = entry && entry.member_overrides ? entry.member_overrides : null;
+      var override = gradeKey && overrides && overrides[gradeKey] ? overrides[gradeKey] : null;
+
+      var humanMean = override && override.human_mean !== null && override.human_mean !== undefined
+        ? override.human_mean
+        : entry ? entry.human_mean : null;
+      var humanBest = override && override.human_best !== null && override.human_best !== undefined
+        ? override.human_best
+        : entry ? entry.human_best : null;
+      var humanStd = override && override.human_std !== null && override.human_std !== undefined
+        ? override.human_std
+        : entry ? entry.human_std : null;
+      var humanPercentile = override && override.human_percentile !== null && override.human_percentile !== undefined
+        ? override.human_percentile
+        : entry ? entry.human_percentile : null;
+      var zScore = override && override.z_score !== null && override.z_score !== undefined
+        ? override.z_score
+        : entry ? entry.z_score : null;
+      var maxPoints = override && override.max_points !== null && override.max_points !== undefined
+        ? override.max_points
+        : entry ? entry.max_points : null;
+      var totalCount = override && override.total_count !== null && override.total_count !== undefined
+        ? override.total_count
+        : null;
+
+      return {
+        humanMean: humanMean,
+        humanBest: humanBest,
+        humanStd: humanStd,
+        humanPercentile: humanPercentile,
+        zScore: zScore,
+        maxPoints: maxPoints,
+        totalCount: totalCount,
+      };
+    }
+
+    function collectGradesFromYear(entry){
+      var result = new Set();
+      if (!entry) return result;
+      if (Array.isArray(entry.grades)){
+        entry.grades.forEach(function(grade){
+          if (Array.isArray(grade.members)){
+            grade.members.forEach(function(member){
+              var num = Number(member);
+              if (!isNaN(num)) result.add(num);
+            });
+          }
+        });
+      }
+      if (entry.ui_groups){
+        Object.values(entry.ui_groups).forEach(function(groupMembers){
+          if (Array.isArray(groupMembers)){
+            groupMembers.forEach(function(member){
+              var num = Number(member);
+              if (!isNaN(num)) result.add(num);
+            });
+          }
+        });
+      }
+      return result;
+    }
+
+    function yearHasGrade(entry, gradeValue){
+      var gradeNumber = toGradeNumber(gradeValue);
+      if (gradeNumber === null || !entry) return false;
+      if (Array.isArray(entry.grades)){
+        for (var i = 0; i < entry.grades.length; i++){
+          var grade = entry.grades[i];
+          if (Array.isArray(grade.members) && grade.members.some(function(member){ return Number(member) === gradeNumber; })){
+            return true;
+          }
+        }
+      }
+      if (entry.ui_groups){
+        var groups = Object.values(entry.ui_groups);
+        for (var j = 0; j < groups.length; j++){
+          var members = groups[j];
+          if (Array.isArray(members) && members.some(function(member){ return Number(member) === gradeNumber; })){
+            return true;
+          }
+        }
+      }
+      return false;
+    }
+
     function populateYearSelect(){
       if (!yearSelect) return;
       var years = state.years.slice().sort(function(a, b){ return a.year - b.year; });
@@ -1796,42 +2026,40 @@
     function populateAllGradeOptions(){
       if (!gradeSelect) return;
       gradeSelect.innerHTML = '';
-      var gradeSet = new Set();
+      var aggregateGrades = new Set();
       state.years.forEach(function(yearEntry){
-        if (yearEntry.ui_groups){
-          Object.keys(yearEntry.ui_groups).forEach(function(gradeKey){
-            gradeSet.add(gradeKey);
-          });
-        }
+        collectGradesFromYear(yearEntry).forEach(function(value){
+          aggregateGrades.add(value);
+        });
       });
-      var grades = Array.from(gradeSet).sort();
-      grades.forEach(function(gradeKey){
+      var grades = Array.from(aggregateGrades).sort(function(a, b){ return a - b; });
+      grades.forEach(function(gradeNumber){
         var option = document.createElement('option');
-        option.value = gradeKey;
-        option.textContent = gradeKey;
+        option.value = String(gradeNumber);
+        option.textContent = 'Grade ' + gradeNumber;
         gradeSelect.appendChild(option);
       });
       if (!state.selectedGrade && grades.length){
-        state.selectedGrade = grades[0];
+        state.selectedGrade = String(grades[0]);
       }
       if (state.selectedGrade && gradeSelect.options.length){
-        setSelectedOption(gradeSelect, state.selectedGrade);
+        setSelectedOption(gradeSelect, String(state.selectedGrade));
       }
     }
 
-    function populateYearsForGrade(gradeKey){
+    function populateYearsForGrade(gradeValue){
       if (!yearSelect) return;
       yearSelect.innerHTML = '';
-      var yearsWithGrade = state.years.filter(function(yearEntry){
-        return yearEntry.ui_groups && yearEntry.ui_groups[gradeKey];
-      }).sort(function(a, b){ return a.year - b.year; });
+      var yearsWithGrade = state.years
+        .filter(function(yearEntry){ return yearHasGrade(yearEntry, gradeValue); })
+        .sort(function(a, b){ return a.year - b.year; });
       yearsWithGrade.forEach(function(entry){
         var option = document.createElement('option');
         option.value = String(entry.year);
         option.textContent = String(entry.year);
         yearSelect.appendChild(option);
       });
-      if (!state.selectedYear && yearsWithGrade.length){
+      if ((!state.selectedYear || !yearsWithGrade.some(function(entry){ return entry.year === state.selectedYear; })) && yearsWithGrade.length){
         state.selectedYear = yearsWithGrade[0].year;
       }
       if (state.selectedYear && yearSelect.options.length){
@@ -1843,22 +2071,18 @@
       if (!gradeSelect) return;
       gradeSelect.innerHTML = '';
       var entry = state.yearMap[year];
-      if (!entry || !entry.grades){
-        state.selectedGrade = null;
-        return;
-      }
-      entry.grades.forEach(function(grade){
+      var gradesForYear = Array.from(collectGradesFromYear(entry)).sort(function(a, b){ return a - b; });
+      gradesForYear.forEach(function(gradeNumber){
         var option = document.createElement('option');
-        option.value = grade.id;
-        option.textContent = grade.label || grade.id;
-        option.dataset.members = JSON.stringify(grade.members || []);
+        option.value = String(gradeNumber);
+        option.textContent = 'Grade ' + gradeNumber;
         gradeSelect.appendChild(option);
       });
-      if (!state.selectedGrade && entry.grades.length){
-        state.selectedGrade = entry.grades[0].id;
+      if (!state.selectedGrade || gradesForYear.indexOf(toGradeNumber(state.selectedGrade)) === -1){
+        state.selectedGrade = gradesForYear.length ? String(gradesForYear[0]) : null;
       }
       if (state.selectedGrade){
-        setSelectedOption(gradeSelect, state.selectedGrade);
+        setSelectedOption(gradeSelect, String(state.selectedGrade));
       }
     }
 
@@ -1891,6 +2115,88 @@
         })
         .catch(function(err){
           console.error('Failed to load human comparison for run', runId, err);
+          return null;
+        });
+    }
+
+    function buildRunSummaryKey(runId){
+      return [runId, state.selectedComparisonSource, state.aggregationStrategy].join('|');
+    }
+
+    function fetchRunSummary(runId){
+      var key = buildRunSummaryKey(runId);
+      if (state.runSummaries[key]){
+        return Promise.resolve(state.runSummaries[key]);
+      }
+      var params = {
+        comparator: state.selectedComparisonSource,
+        weight_mode: 'micro',
+        late_year_strategy: state.aggregationStrategy,
+        top_limit: 5
+      };
+      var url = '/api/humans/stats/run/' + encodeURIComponent(runId);
+      return fetchJSON(url, params)
+        .then(function(payload){
+          state.runSummaries[key] = payload;
+          return payload;
+        })
+        .catch(function(err){
+          console.error('Failed to load run summary', err);
+          return null;
+        });
+    }
+
+    function buildCohortSummaryKey(runIds){
+      return [runIds.slice().sort().join('|'), state.selectedComparisonSource, state.selectedCohortType, state.aggregationStrategy].join('|');
+    }
+
+    function fetchCohortSummary(runIds){
+      var key = buildCohortSummaryKey(runIds);
+      if (state.cohortSummaries[key]){
+        return Promise.resolve(state.cohortSummaries[key]);
+      }
+      if (!runIds.length){
+        return Promise.resolve(null);
+      }
+      var payload = {
+        run_ids: runIds,
+        comparator: state.selectedComparisonSource,
+        weight_mode: state.selectedCohortType,
+        late_year_strategy: state.aggregationStrategy,
+        top_limit: 5,
+      };
+      return fetch('/api/humans/stats/cohort', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      })
+        .then(function(response){
+          if (!response.ok){
+            throw new Error('Request failed: ' + response.status);
+          }
+          return response.json();
+        })
+        .then(function(data){
+          state.cohortSummaries[key] = data;
+          return data;
+        })
+        .catch(function(err){
+          console.error('Failed to load cohort summary', err);
+          return null;
+        });
+    }
+
+    function fetchHumanBaselineSummary(comparator){
+      if (state.baselineSummaries[comparator]){
+        return Promise.resolve(state.baselineSummaries[comparator]);
+      }
+      return fetchJSON('/api/humans/stats/human-baseline', { comparator: comparator })
+        .then(function(payload){
+          state.baselineSummaries[comparator] = payload;
+          return payload;
+        })
+        .catch(function(err){
+          console.error('Failed to load human baseline summary', err);
           return null;
         });
     }
@@ -1969,6 +2275,151 @@
       return Number(value).toFixed(1).replace(/\.0$/, '');
     }
 
+    function formatSignedPercent(value){
+      if (value === null || value === undefined || isNaN(value)) return '–';
+      var pct = Number(value) * 100;
+      var formatted = pct.toFixed(1).replace(/\.0$/, '');
+      if (pct > 0) return '+' + formatted + '%';
+      if (pct === 0) return '0%';
+      return formatted + '%';
+    }
+
+    function describeBestYear(bestYear){
+      if (!bestYear) return '–';
+      var pieces = [];
+      if (bestYear.avg_percentile !== null && bestYear.avg_percentile !== undefined){
+        pieces.push(formatPercent(bestYear.avg_percentile));
+      } else if (bestYear.avg_score_pct !== null && bestYear.avg_score_pct !== undefined){
+        pieces.push(formatPercent(bestYear.avg_score_pct));
+      } else if (bestYear.avg_gap_pct !== null && bestYear.avg_gap_pct !== undefined){
+        pieces.push(formatSignedPercent(bestYear.avg_gap_pct));
+      }
+      return String(bestYear.year) + (pieces.length ? ' (' + pieces[0] + ')' : '');
+    }
+
+    function describeBestGrade(bestGrade){
+      if (!bestGrade) return '–';
+      var label = bestGrade.grade_label || bestGrade.grade_id;
+      var pieces = [];
+      if (bestGrade.avg_percentile !== null && bestGrade.avg_percentile !== undefined){
+        pieces.push(formatPercent(bestGrade.avg_percentile));
+      } else if (bestGrade.avg_score_pct !== null && bestGrade.avg_score_pct !== undefined){
+        pieces.push(formatPercent(bestGrade.avg_score_pct));
+      } else if (bestGrade.avg_gap_pct !== null && bestGrade.avg_gap_pct !== undefined){
+        pieces.push(formatSignedPercent(bestGrade.avg_gap_pct));
+      }
+      return label + (pieces.length ? ' (' + pieces[0] + ')' : '');
+    }
+
+    function renderThresholds(summary){
+      if (!statsThresholds) return;
+      statsThresholds.innerHTML = '';
+      if (!summary || !summary.threshold_breakdown || !summary.threshold_breakdown.length){
+        return;
+      }
+      summary.threshold_breakdown.forEach(function(entry){
+        var item = document.createElement('li');
+        var thresholdLabel = '≥' + Number(entry.threshold_pp).toFixed(1).replace(/\.0$/, '') + ' p.p.';
+        item.textContent = thresholdLabel + ': LLM ' + entry.llm_win_count + ' · Humans ' + entry.human_win_count;
+        statsThresholds.appendChild(item);
+      });
+    }
+
+    function renderTopLists(summary){
+      if (!runToplists) return;
+      if (!summary){
+        runToplists.hidden = true;
+        if (topLlmWinsList) topLlmWinsList.innerHTML = '';
+        if (topHumanWinsList) topHumanWinsList.innerHTML = '';
+        return;
+      }
+
+      var llmEntries = summary.top_llm_wins || [];
+      var humanEntries = summary.top_human_wins || [];
+
+      if (topLlmWinsList){
+        topLlmWinsList.innerHTML = '';
+        if (!llmEntries.length){
+          var emptyLlm = document.createElement('li');
+          emptyLlm.textContent = 'No strong LLM wins detected';
+          topLlmWinsList.appendChild(emptyLlm);
+        } else {
+          llmEntries.forEach(function(entry){
+            topLlmWinsList.appendChild(createTopListItem(entry));
+          });
+        }
+      }
+
+      if (topHumanWinsList){
+        topHumanWinsList.innerHTML = '';
+        if (!humanEntries.length){
+          var emptyHuman = document.createElement('li');
+          emptyHuman.textContent = 'No strong human wins detected';
+          topHumanWinsList.appendChild(emptyHuman);
+        } else {
+          humanEntries.forEach(function(entry){
+            topHumanWinsList.appendChild(createTopListItem(entry));
+          });
+        }
+      }
+
+      runToplists.hidden = !llmEntries.length && !humanEntries.length;
+    }
+
+    function createTopListItem(entry){
+      var li = document.createElement('li');
+      var label = entry.year + ' · ' + (entry.grade_label || entry.grade_id);
+      var gapText = formatSignedPercent(entry.gap_score_pct);
+      var llmPct = formatPercent(entry.llm_score_pct);
+      var humanPct = formatPercent(entry.human_score_pct);
+      li.textContent = label + ': ' + gapText + ' (LLM ' + llmPct + ' vs Human ' + humanPct + ')';
+      return li;
+    }
+
+    function applyRunSummary(summary){
+      state.currentRunSummary = summary;
+      if (!summary){
+        if (statsTotal) statsTotal.textContent = '0';
+        if (statsLlmWins) statsLlmWins.textContent = '0';
+        if (statsHumanWins) statsHumanWins.textContent = '0';
+        if (statsAvgPercentile) statsAvgPercentile.textContent = '–';
+        if (statsBestYear) statsBestYear.textContent = '–';
+        if (statsBestGrade) statsBestGrade.textContent = '–';
+        renderThresholds(null);
+        renderTopLists(null);
+        return;
+      }
+
+      if (statsTotal) statsTotal.textContent = String(summary.total_cells || 0);
+      if (statsLlmWins) statsLlmWins.textContent = String(summary.llm_win_count || 0);
+      if (statsHumanWins) statsHumanWins.textContent = String(summary.human_win_count || 0);
+      if (statsAvgPercentile) statsAvgPercentile.textContent = summary.avg_percentile !== null && summary.avg_percentile !== undefined ? formatPercent(summary.avg_percentile) : '–';
+      if (statsBestYear) statsBestYear.textContent = describeBestYear(summary.best_year);
+      if (statsBestGrade) statsBestGrade.textContent = describeBestGrade(summary.best_grade);
+
+      renderThresholds(summary);
+      renderTopLists(summary);
+    }
+
+    function updateBaselineHighlights(){
+      if (!baselineSection) return;
+      fetchHumanBaselineSummary(state.selectedComparisonSource).then(function(payload){
+        if (!payload){
+          baselineSection.hidden = true;
+          return;
+        }
+        baselineSection.hidden = false;
+        if (baselineBestYear) baselineBestYear.textContent = describeBestYear(payload.best_year);
+        if (baselineBestYearNote) baselineBestYearNote.textContent = payload.best_year && payload.best_year.avg_score_pct !== null && payload.best_year.avg_score_pct !== undefined
+          ? 'Avg score: ' + formatPercent(payload.best_year.avg_score_pct)
+          : '';
+        if (baselineBestGrade) baselineBestGrade.textContent = describeBestGrade(payload.best_grade);
+        if (baselineBestGradeNote) baselineBestGradeNote.textContent = payload.best_grade && payload.best_grade.avg_score_pct !== null && payload.best_grade.avg_score_pct !== undefined
+          ? 'Avg score: ' + formatPercent(payload.best_grade.avg_score_pct)
+          : '';
+      });
+    }
+
     function updateRunSummary(entry){
       var runRating = $('#human-run-rating');
       var runRatingNote = $('#human-run-rating-note');
@@ -2019,10 +2470,13 @@
         if (gapPctNote) gapPctNote.textContent = '';
         return;
       }
-      
-      if (entry.human_percentile !== null && entry.human_percentile !== undefined){
-        runPercentile.textContent = formatPercent(entry.human_percentile);
-        var pctValue = entry.human_percentile * 100;
+
+      var selectedGradeNumber = toGradeNumber(state.selectedGrade);
+      var metrics = deriveGradeMetrics(entry, selectedGradeNumber);
+
+      if (metrics.humanPercentile !== null && metrics.humanPercentile !== undefined){
+        runPercentile.textContent = formatPercent(metrics.humanPercentile);
+        var pctValue = metrics.humanPercentile * 100;
         if (pctValue >= 99) runPercentileNote.textContent = 'Exceptional - Top 1%';
         else if (pctValue >= 95) runPercentileNote.textContent = 'Excellent - Top 5%';
         else if (pctValue >= 75) runPercentileNote.textContent = 'Good - Top 25%';
@@ -2034,9 +2488,9 @@
         runPercentileNote.textContent = 'Human percentile unavailable';
       }
       
-      if (entry.z_score !== null && entry.z_score !== undefined){
-        runZScore.textContent = entry.z_score.toFixed(2);
-        var zVal = entry.z_score;
+      if (metrics.zScore !== null && metrics.zScore !== undefined){
+        runZScore.textContent = metrics.zScore.toFixed(2);
+        var zVal = metrics.zScore;
         if (zVal >= 3.0) runZScoreNote.textContent = '+3σ - Exceptional';
         else if (zVal >= 2.0) runZScoreNote.textContent = '+2σ - Excellent';
         else if (zVal >= 1.0) runZScoreNote.textContent = '+1σ - Good';
@@ -2050,8 +2504,8 @@
       
       
       if (runRating && runRatingNote){
-        if (entry.human_percentile !== null){
-          var percentile = entry.human_percentile;
+        if (metrics.humanPercentile !== null && metrics.humanPercentile !== undefined){
+          var percentile = metrics.humanPercentile;
           if (percentile >= 0.99){
             runRating.textContent = '⭐⭐⭐⭐⭐';
             runRatingNote.textContent = 'Exceptional';
@@ -2089,34 +2543,34 @@
         humanBestScoreWrapper.style.display = state.selectedComparisonSource === 'best' ? '' : 'none';
       }
 
-      if (humanAvgScore) humanAvgScore.textContent = entry.human_mean !== null ? formatScore(entry.human_mean) : '–';
-      if (humanBestScore) humanBestScore.textContent = entry.human_best !== null ? formatScore(entry.human_best) : '–';
-      if (humanStdDev) humanStdDev.textContent = entry.human_std !== null ? formatScore(entry.human_std) : '–';
+      if (humanAvgScore) humanAvgScore.textContent = metrics.humanMean !== null && metrics.humanMean !== undefined ? formatScore(metrics.humanMean) : '–';
+      if (humanBestScore) humanBestScore.textContent = metrics.humanBest !== null && metrics.humanBest !== undefined ? formatScore(metrics.humanBest) : '–';
+      if (humanStdDev) humanStdDev.textContent = metrics.humanStd !== null && metrics.humanStd !== undefined ? formatScore(metrics.humanStd) : '–';
       
-      if (humanAvgPct && entry.human_mean !== null && entry.llm_max !== null && entry.llm_max > 0){
-        var humanAvgPctVal = entry.human_mean / entry.llm_max;
+      var maxPointsForPct = metrics.maxPoints !== null && metrics.maxPoints !== undefined ? metrics.maxPoints : entry.llm_max;
+      if (humanAvgPct && metrics.humanMean !== null && metrics.humanMean !== undefined && maxPointsForPct !== null && maxPointsForPct > 0){
+        var humanAvgPctVal = metrics.humanMean / maxPointsForPct;
         humanAvgPct.textContent = formatPercent(humanAvgPctVal);
       } else if (humanAvgPct){
         humanAvgPct.textContent = '–';
       }
 
-      if (humanBestPct && entry.human_best !== null && entry.llm_max !== null && entry.llm_max > 0){
-        var humanBestPctVal = entry.human_best / entry.llm_max;
+      if (humanBestPct && metrics.humanBest !== null && metrics.humanBest !== undefined && maxPointsForPct !== null && maxPointsForPct > 0){
+        var humanBestPctVal = metrics.humanBest / maxPointsForPct;
         humanBestPct.textContent = formatPercent(humanBestPctVal);
       } else if (humanBestPct){
         humanBestPct.textContent = '–';
       }
       
       if (humanTotalCount){
-        var yearEntry = state.yearMap[entry.year];
-        if (yearEntry && yearEntry.totals_by_grade && yearEntry.totals_by_grade[entry.grade_id]){
-          humanTotalCount.textContent = yearEntry.totals_by_grade[entry.grade_id].toLocaleString();
+        if (metrics.totalCount !== null && metrics.totalCount !== undefined){
+          humanTotalCount.textContent = metrics.totalCount.toLocaleString();
         } else {
           humanTotalCount.textContent = '–';
         }
       }
       
-      var humanScoreForGap = state.selectedComparisonSource === 'best' ? entry.human_best : entry.human_mean;
+      var humanScoreForGap = state.selectedComparisonSource === 'best' ? metrics.humanBest : metrics.humanMean;
       var humanScoreLabelForGap = state.selectedComparisonSource === 'best' ? 'best' : 'average';
 
       if (gapScoreDiff && entry.llm_total !== null && humanScoreForGap !== null){
@@ -2135,8 +2589,8 @@
         gapScoreDiff.className = 'gap-value';
       }
       
-      if (gapPctDiff && entry.llm_score_pct !== null && humanScoreForGap !== null && entry.llm_max !== null && entry.llm_max > 0){
-        var humanPctVal = humanScoreForGap / entry.llm_max;
+      if (gapPctDiff && entry.llm_score_pct !== null && humanScoreForGap !== null && maxPointsForPct !== null && maxPointsForPct > 0){
+        var humanPctVal = humanScoreForGap / maxPointsForPct;
         var pctDiff = entry.llm_score_pct - humanPctVal;
         gapPctDiff.textContent = (pctDiff >= 0 ? '+' : '') + formatPercent(pctDiff);
         if (gapPctNote){
@@ -2170,14 +2624,15 @@
 
       var filteredEntries = runData.entries;
       var tableView = state.selectedTableView || 'single';
-      
-      if (tableView === 'single' && state.selectedYear && state.selectedGrade){
+      var selectedGradeNumber = toGradeNumber(state.selectedGrade);
+
+      if (tableView === 'single' && state.selectedYear && selectedGradeNumber !== null){
         filteredEntries = runData.entries.filter(function(entry){
-          return entry.year === state.selectedYear && entry.grade_id === state.selectedGrade;
+          return entry.year === state.selectedYear && entryHasGrade(entry, selectedGradeNumber);
         });
-      } else if (tableView === 'all-years' && state.selectedGrade){
+      } else if (tableView === 'all-years' && selectedGradeNumber !== null){
         filteredEntries = runData.entries.filter(function(entry){
-          return entry.grade_id === state.selectedGrade;
+          return entryHasGrade(entry, selectedGradeNumber);
         });
       } else if (tableView === 'all-grades' && state.selectedYear){
         filteredEntries = runData.entries.filter(function(entry){
@@ -2194,11 +2649,12 @@
       
       if (filterValue !== 'all'){
         filteredEntries = filteredEntries.filter(function(entry){
-          var humanScore = state.selectedComparisonSource === 'best' ? entry.human_best : entry.human_mean;
-          if (filterValue === 'excellent') return entry.human_percentile >= 0.95;
-          if (filterValue === 'good') return entry.human_percentile >= 0.75;
-          if (filterValue === 'average') return entry.human_percentile >= 0.50;
-          if (filterValue === 'below-avg') return entry.human_percentile < 0.50;
+          var metrics = deriveGradeMetrics(entry, tableView === 'all-grades' ? null : selectedGradeNumber);
+          var humanScore = state.selectedComparisonSource === 'best' ? metrics.humanBest : metrics.humanMean;
+          if (filterValue === 'excellent') return metrics.humanPercentile >= 0.95;
+          if (filterValue === 'good') return metrics.humanPercentile >= 0.75;
+          if (filterValue === 'average') return metrics.humanPercentile >= 0.50;
+          if (filterValue === 'below-avg') return metrics.humanPercentile < 0.50;
           if (filterValue === 'llm-wins') return entry.llm_total > humanScore;
           if (filterValue === 'human-wins') return entry.llm_total < humanScore;
           return true;
@@ -2218,8 +2674,11 @@
       }
       
       function comparator(a, b){
-        var humanScoreA = state.selectedComparisonSource === 'best' ? a.human_best : a.human_mean;
-        var humanScoreB = state.selectedComparisonSource === 'best' ? b.human_best : b.human_mean;
+        var gradeNumberForMetrics = tableView === 'all-grades' ? null : selectedGradeNumber;
+        var metricsA = deriveGradeMetrics(a, gradeNumberForMetrics);
+        var metricsB = deriveGradeMetrics(b, gradeNumberForMetrics);
+        var humanScoreA = state.selectedComparisonSource === 'best' ? metricsA.humanBest : metricsA.humanMean;
+        var humanScoreB = state.selectedComparisonSource === 'best' ? metricsB.humanBest : metricsB.humanMean;
 
         if (sortValue === 'year-grade'){
           if (a.year !== b.year) return a.year - b.year;
@@ -2230,15 +2689,15 @@
           if (gA !== gB) return gA - gB;
           return (a.year || 0) - (b.year || 0);
         } else if (sortValue === 'percentile-desc'){
-          var pa = (a.human_percentile == null ? -Infinity : a.human_percentile);
-          var pb = (b.human_percentile == null ? -Infinity : b.human_percentile);
+          var pa = (metricsA.humanPercentile == null ? -Infinity : metricsA.humanPercentile);
+          var pb = (metricsB.humanPercentile == null ? -Infinity : metricsB.humanPercentile);
           if (pb !== pa) return pb - pa;
           // tie-breakers for stability
           if (a.year !== b.year) return a.year - b.year;
           return numericGradeKey(a) - numericGradeKey(b);
         } else if (sortValue === 'percentile-asc'){
-          var pa2 = (a.human_percentile == null ? Infinity : a.human_percentile);
-          var pb2 = (b.human_percentile == null ? Infinity : b.human_percentile);
+          var pa2 = (metricsA.humanPercentile == null ? Infinity : metricsA.humanPercentile);
+          var pb2 = (metricsB.humanPercentile == null ? Infinity : metricsB.humanPercentile);
           if (pa2 !== pb2) return pa2 - pb2;
           if (a.year !== b.year) return a.year - b.year;
           return numericGradeKey(a) - numericGradeKey(b);
@@ -2289,18 +2748,20 @@
           tr.classList.add('band-start');
         }
         if (currentBand) tr.classList.add(isOddBand ? 'band-odd' : 'band-even');
+        var metrics = deriveGradeMetrics(entry, tableView === 'all-grades' ? null : selectedGradeNumber);
         var percentileClass = '';
-        if (entry.human_percentile !== null && entry.human_percentile !== undefined){
-          if (entry.human_percentile >= 0.95) percentileClass = 'excellent';
-          else if (entry.human_percentile >= 0.75) percentileClass = 'good';
-          else if (entry.human_percentile >= 0.50) percentileClass = 'average';
+        if (metrics.humanPercentile !== null && metrics.humanPercentile !== undefined){
+          if (metrics.humanPercentile >= 0.95) percentileClass = 'excellent';
+          else if (metrics.humanPercentile >= 0.75) percentileClass = 'good';
+          else if (metrics.humanPercentile >= 0.50) percentileClass = 'average';
           else percentileClass = 'below-average';
         }
         
-        var humanScore = state.selectedComparisonSource === 'best' ? entry.human_best : entry.human_mean;
+        var humanScore = state.selectedComparisonSource === 'best' ? metrics.humanBest : metrics.humanMean;
         var humanPct = '–';
-        if (humanScore !== null && entry.llm_max !== null && entry.llm_max > 0){
-          humanPct = formatPercent(humanScore / entry.llm_max);
+        var maxPointsForPct = metrics.maxPoints !== null && metrics.maxPoints !== undefined ? metrics.maxPoints : entry.llm_max;
+        if (humanScore !== null && maxPointsForPct !== null && maxPointsForPct > 0){
+          humanPct = formatPercent(humanScore / maxPointsForPct);
         }
         
         var gap = '–';
@@ -2310,32 +2771,65 @@
           gap = (scoreDiff >= 0 ? '+' : '') + formatScore(scoreDiff);
           gapClass = scoreDiff >= 0 ? 'positive' : 'negative';
         }
-        
+
+        var gradeInfo = buildGradeDisplay(entry, (tableView === 'all-grades' ? null : selectedGradeNumber), entry.year);
+        var gradeCell = '<div class="grade-primary">' + gradeInfo.primary + '</div>';
+        if (gradeInfo.meta){
+          gradeCell += '<div class="grade-meta">' + gradeInfo.meta + '</div>';
+        }
+
         tr.innerHTML = [
           '<td>' + entry.year + '</td>',
-          '<td>' + (entry.grade_label || entry.grade_id) + '</td>',
+          '<td>' + gradeCell + '</td>',
           '<td>' + formatScore(entry.llm_total) + '</td>',
           '<td>' + formatPercent(entry.llm_score_pct) + '</td>',
           '<td>' + (humanScore !== null ? formatScore(humanScore) : '–') + '</td>',
           '<td>' + humanPct + '</td>',
-          '<td>' + (entry.human_std !== null ? formatScore(entry.human_std) : '–') + '</td>',
-          '<td class="' + percentileClass + '">' + formatPercent(entry.human_percentile) + '</td>',
+          '<td>' + (metrics.humanStd !== null && metrics.humanStd !== undefined ? formatScore(metrics.humanStd) : '–') + '</td>',
+          '<td class="' + percentileClass + '">' + formatPercent(metrics.humanPercentile) + '</td>',
           '<td class="' + gapClass + '">' + gap + '</td>'
         ].join('');
         runTableBody.appendChild(tr);
       });
       
+      var aggregatedNoteEl = $('#human-run-aggregated-note');
+      if (aggregatedNoteEl){
+        var aggregatedEntry = null;
+        if (selectedGradeNumber !== null && tableView !== 'all-grades'){
+          aggregatedEntry = filteredEntries.find(function(entry){
+            return entryHasGrade(entry, selectedGradeNumber) && getEntryMembers(entry).length > 1;
+          });
+        }
+        if (aggregatedEntry){
+          var bandLabelRaw = aggregatedEntry.grade_label || aggregatedEntry.grade_id || '';
+          var bandLabel = bandLabelRaw.split('(')[0].trim() || bandLabelRaw || 'original band';
+          var coverage = getEntryMembers(aggregatedEntry).join('-');
+          var coverageText = coverage ? ' covering grades ' + coverage : '';
+          aggregatedNoteEl.textContent = 'Note: Contest data only reports this segment as ' + bandLabel + coverageText + '; the table reuses that band for Grade ' + selectedGradeNumber + '.';
+          aggregatedNoteEl.hidden = false;
+        } else {
+          aggregatedNoteEl.hidden = true;
+        }
+      }
+
       updateRunTableStats(filteredEntries);
     }
     
     function updateRunTableStats(entries){
+      if (state.currentRunSummary){
+        applyRunSummary(state.currentRunSummary);
+        return;
+      }
+
       var statsTotal = $('#stats-total');
       var statsLlmWins = $('#stats-llm-wins');
       var statsHumanWins = $('#stats-human-wins');
       var statsAvgPercentile = $('#stats-avg-percentile');
       var statsBestYear = $('#stats-best-year');
       var statsBestGrade = $('#stats-best-grade');
-      
+
+      var selectedGradeNumber = (state.selectedTableView === 'all-grades') ? null : toGradeNumber(state.selectedGrade);
+
       if (!entries || entries.length === 0){
         if (statsTotal) statsTotal.textContent = '0';
         if (statsLlmWins) statsLlmWins.textContent = '0';
@@ -2354,27 +2848,29 @@
       var gradeScores = {};
       
       entries.forEach(function(entry){
-        var humanScore = state.selectedComparisonSource === 'best' ? entry.human_best : entry.human_mean;
+        var metrics = deriveGradeMetrics(entry, selectedGradeNumber);
+        var humanScore = state.selectedComparisonSource === 'best' ? metrics.humanBest : metrics.humanMean;
         if (entry.llm_total !== null && humanScore !== null){
           if (entry.llm_total > humanScore) llmWins++;
           else if (entry.llm_total < humanScore) humanWins++;
         }
         
-        if (entry.human_percentile !== null && entry.human_percentile !== undefined){
-          totalPercentile += entry.human_percentile;
+        if (metrics.humanPercentile !== null && metrics.humanPercentile !== undefined){
+          totalPercentile += metrics.humanPercentile;
           percentileCount++;
         }
         
-        if (entry.year && entry.human_percentile !== null){
+        if (entry.year && metrics.humanPercentile !== null && metrics.humanPercentile !== undefined){
           if (!yearScores[entry.year]) yearScores[entry.year] = {sum: 0, count: 0};
-          yearScores[entry.year].sum += entry.human_percentile;
+          yearScores[entry.year].sum += metrics.humanPercentile;
           yearScores[entry.year].count++;
         }
         
-        if (entry.grade_id && entry.human_percentile !== null){
-          if (!gradeScores[entry.grade_id]) gradeScores[entry.grade_id] = {sum: 0, count: 0};
-          gradeScores[entry.grade_id].sum += entry.human_percentile;
-          gradeScores[entry.grade_id].count++;
+        if (state.selectedGrade && metrics.humanPercentile !== null && metrics.humanPercentile !== undefined){
+          var key = 'Grade ' + state.selectedGrade;
+          if (!gradeScores[key]) gradeScores[key] = {sum: 0, count: 0};
+          gradeScores[key].sum += metrics.humanPercentile;
+          gradeScores[key].count++;
         }
       });
       
@@ -2457,14 +2953,18 @@
           entry.human_percentile = percentileOverride.percentile;
         }
 
+        var metrics = deriveGradeMetrics(entry, toGradeNumber(state.selectedGrade));
         var markers = [];
-        if (entry.human_percentile !== null && entry.human_percentile !== undefined){
+        if (metrics.humanPercentile !== null && metrics.humanPercentile !== undefined){
           markers.push({
             label: labelForRun(state.runs.find(function(run){ return run.run_id === runData.run_id; })),
             score: entry.llm_total,
-            percentile: entry.human_percentile,
+            percentile: metrics.humanPercentile,
           });
         }
+
+        var runGradeInfo = buildGradeDisplay(entry, toGradeNumber(state.selectedGrade), entry.year);
+        var runGradeLabel = runGradeInfo.meta ? runGradeInfo.primary + ' • ' + runGradeInfo.meta : runGradeInfo.primary;
 
         charts.updateCDF(
           cdfCanvas,
@@ -2475,7 +2975,7 @@
           yearSummary && yearSummary.grades ? entry.max_points : entry.llm_max
         );
 
-        var heatmapData = buildHeatmapData([entry], entry.grade_label || entry.grade_id);
+        var heatmapData = buildHeatmapData([entry], runGradeLabel);
         charts.updateHeatmap(heatmapCanvas, heatmapData);
         charts.updateBoxViolin(percentileCanvas, []);
         chartsSection.hidden = false;
@@ -2514,19 +3014,50 @@
       }
       populateGradeSelect(state.selectedYear);
       var entriesForYear = comparison.entries.filter(function(entry){ return entry.year === state.selectedYear; });
-      if (!state.selectedGrade || !entriesForYear.some(function(entry){ return entry.grade_id === state.selectedGrade; })){
-        state.selectedGrade = entriesForYear.length ? entriesForYear[0].grade_id : null;
+      var selectedGradeNumber = toGradeNumber(state.selectedGrade);
+      if (selectedGradeNumber === null || !entriesForYear.some(function(entry){ return entryHasGrade(entry, selectedGradeNumber); })){
+        var fallbackEntry = entriesForYear[0];
+        var fallbackMembers = getEntryMembers(fallbackEntry);
+        state.selectedGrade = fallbackMembers.length ? String(fallbackMembers[0]) : null;
+        selectedGradeNumber = toGradeNumber(state.selectedGrade);
         if (gradeSelect && state.selectedGrade){
-          setSelectedOption(gradeSelect, state.selectedGrade);
+          setSelectedOption(gradeSelect, String(state.selectedGrade));
         }
       }
-      var selectedEntry = entriesForYear.find(function(entry){ return entry.grade_id === state.selectedGrade; }) || entriesForYear[0];
-      if (selectedEntry){
-        state.selectedGrade = selectedEntry.grade_id;
+      var selectedEntry = entriesForYear.find(function(entry){ return entryHasGrade(entry, selectedGradeNumber); }) || entriesForYear[0];
+      if (selectedEntry && selectedGradeNumber === null){
+        var membersFallback = getEntryMembers(selectedEntry);
+        if (membersFallback.length){
+          state.selectedGrade = String(membersFallback[0]);
+          selectedGradeNumber = membersFallback[0];
+        }
       }
-      noteEl.textContent = selectedEntry ? ('Run ' + state.selectedRun + ' · ' + (selectedEntry.grade_label || selectedEntry.grade_id)) : '';
+      if (selectedEntry && state.selectedGrade){
+        var noteParts = ['Run ' + state.selectedRun];
+        var gradeInfo = buildGradeDisplay(selectedEntry, selectedGradeNumber, selectedEntry ? selectedEntry.year : null);
+        noteParts.push(gradeInfo.primary);
+        if (gradeInfo.meta){
+          noteParts.push(gradeInfo.meta);
+        }
+        noteEl.textContent = noteParts.join(' · ');
+      } else if (selectedEntry){
+        noteEl.textContent = 'Run ' + state.selectedRun + ' · ' + (selectedEntry.grade_label || selectedEntry.grade_id);
+      } else {
+        noteEl.textContent = '';
+      }
       // quick stats
       updateQuickStats(comparison);
+
+      state.currentRunSummaryKey = buildRunSummaryKey(state.selectedRun);
+      applyRunSummary(null);
+      fetchRunSummary(state.selectedRun).then(function(payload){
+        if (state.currentRunSummaryKey !== buildRunSummaryKey(state.selectedRun)){
+          return;
+        }
+        var summary = payload && payload.summary ? payload.summary : null;
+        applyRunSummary(summary);
+      });
+
       renderRunTable(comparison);
       updateRunSummary(selectedEntry);
       updateRunCharts(comparison, selectedEntry);
@@ -2560,7 +3091,9 @@
 
     function computeHeatmapValues(entry){
       if (!entry) return null;
-      return buildHeatmapData([entry], entry.grade_label || entry.grade_id);
+      var gradeInfo = buildGradeDisplay(entry, toGradeNumber(state.selectedGrade), entry.year);
+      var label = gradeInfo.meta ? gradeInfo.primary + ' • ' + gradeInfo.meta : gradeInfo.primary;
+      return buildHeatmapData([entry], label);
     }
 
     function renderCohortTable(entries){
@@ -2569,15 +3102,25 @@
       if (!entries){
         return;
       }
+      var activeGradeNumber = toGradeNumber(state.selectedGrade);
       entries.forEach(function(entry){
         var tr = document.createElement('tr');
+        var gradeInfo = buildGradeDisplay(entry, activeGradeNumber !== null && entryHasGrade(entry, activeGradeNumber) ? activeGradeNumber : null, entry.year);
+        var gradeCell = '<div class="grade-primary">' + gradeInfo.primary + '</div>';
+        if (gradeInfo.meta){
+          gradeCell += '<div class="grade-meta">' + gradeInfo.meta + '</div>';
+        }
+        var metrics = deriveGradeMetrics(entry, activeGradeNumber !== null && entryHasGrade(entry, activeGradeNumber) ? activeGradeNumber : null);
+        var avgHumanPercentile = metrics.humanPercentile !== null && metrics.humanPercentile !== undefined
+          ? formatPercent(metrics.humanPercentile)
+          : formatPercent(entry.avg_human_percentile);
         tr.innerHTML = [
           '<td>' + entry.year + '</td>',
-          '<td>' + (entry.grade_label || entry.grade_id) + '</td>',
+          '<td>' + gradeCell + '</td>',
           '<td>' + entry.run_count + '</td>',
           '<td>' + entry.sample_count + '</td>',
           '<td>' + formatPercent(entry.avg_llm_score_pct) + '</td>',
-          '<td>' + formatPercent(entry.avg_human_percentile) + '</td>',
+          '<td>' + avgHumanPercentile + '</td>',
           '<td>' + formatPercent(entry.p25_percentile) + '</td>',
           '<td>' + formatPercent(entry.median_percentile) + '</td>',
           '<td>' + formatPercent(entry.p75_percentile) + '</td>',
@@ -2604,20 +3147,26 @@
         fetchCdf(year, gradeId)
       ]).then(function(results){
         var cdf = results[1];
+        var cohortGradeInfo = buildGradeDisplay(entry, toGradeNumber(state.selectedGrade), entry.year);
+        var cohortGradeLabel = cohortGradeInfo.meta ? cohortGradeInfo.primary + ' • ' + cohortGradeInfo.meta : cohortGradeInfo.primary;
+
         charts.updateCDF(
           cdfCanvas,
           (cdf && cdf.points) ? cdf.points.map(function(point){ return { score: point.score, percentile: point.percentile }; }) : [],
           markers || [],
           entry.max_points
         );
-        var heatmapData = buildHeatmapData(entries, entry.grade_label || entry.grade_id);
+        var heatmapData = buildHeatmapData(entries, cohortGradeLabel);
         charts.updateHeatmap(heatmapCanvas, heatmapData);
 
+        var gradeNumberForBox = toGradeNumber(state.selectedGrade);
         var boxData = [];
         entries.forEach(function(item){
           if (item.median_percentile !== null && item.median_percentile !== undefined){
+            var itemInfo = buildGradeDisplay(item, gradeNumberForBox !== null && entryHasGrade(item, gradeNumberForBox) ? gradeNumberForBox : null, item.year);
+            var itemLabel = itemInfo.meta ? itemInfo.primary + ' • ' + itemInfo.meta : itemInfo.primary;
             boxData.push({
-              label: item.grade_label || item.grade_id,
+              label: itemLabel,
               stats: {
                 min: item.min_percentile !== null && item.min_percentile !== undefined ? item.min_percentile : item.median_percentile,
                 p25: item.p25_percentile !== null && item.p25_percentile !== undefined ? item.p25_percentile : item.median_percentile,
@@ -2657,15 +3206,20 @@
         return;
       }
       
-      if (avgPercentileEl && entry.avg_human_percentile !== null && entry.avg_human_percentile !== undefined){
-        avgPercentileEl.textContent = formatPercent(entry.avg_human_percentile);
+      var gradeNumber = toGradeNumber(state.selectedGrade);
+      var metrics = deriveGradeMetrics(entry, gradeNumber);
+
+      if (avgPercentileEl && metrics.humanPercentile !== null && metrics.humanPercentile !== undefined){
+        avgPercentileEl.textContent = formatPercent(metrics.humanPercentile);
         if (percentileNoteEl){
-          var pct = entry.avg_human_percentile * 100;
+          var pct = metrics.humanPercentile * 100;
           if (pct >= 95) percentileNoteEl.textContent = 'Excellent performance';
           else if (pct >= 75) percentileNoteEl.textContent = 'Good performance';
           else if (pct >= 50) percentileNoteEl.textContent = 'Above average';
           else percentileNoteEl.textContent = 'Below average';
         }
+      } else if (avgPercentileEl && entry.avg_human_percentile !== null && entry.avg_human_percentile !== undefined){
+        avgPercentileEl.textContent = formatPercent(entry.avg_human_percentile);
       } else if (avgPercentileEl){
         avgPercentileEl.textContent = '–';
       }
@@ -2728,29 +3282,53 @@
           populateGradeSelect(state.selectedYear);
         }
         var filteredEntries = entries.filter(function(entry){ return entry.year === state.selectedYear; });
-        if (!state.selectedGrade || !filteredEntries.some(function(entry){ return entry.grade_id === state.selectedGrade; })){
-          state.selectedGrade = filteredEntries.length ? filteredEntries[0].grade_id : null;
+        var selectedGradeNumber = toGradeNumber(state.selectedGrade);
+        if (selectedGradeNumber === null || !filteredEntries.some(function(entry){ return entryHasGrade(entry, selectedGradeNumber); })){
+          var fallback = filteredEntries[0];
+          var fallbackMembers = getEntryMembers(fallback);
+          state.selectedGrade = fallbackMembers.length ? String(fallbackMembers[0]) : null;
+          selectedGradeNumber = toGradeNumber(state.selectedGrade);
           if (gradeSelect && state.selectedGrade){
-            setSelectedOption(gradeSelect, state.selectedGrade);
+            setSelectedOption(gradeSelect, String(state.selectedGrade));
           }
         }
-        var selectedEntries = filteredEntries.filter(function(entry){ return entry.grade_id === state.selectedGrade; });
-        noteEl.textContent = state.selectedGrade ? ('Cohort · ' + (selectedEntries[0] ? (selectedEntries[0].grade_label || selectedEntries[0].grade_id) : state.selectedGrade)) : '';
+        var selectedEntries = filteredEntries.filter(function(entry){ return entryHasGrade(entry, selectedGradeNumber); });
+        if (selectedEntries.length){
+          var cohortLabelParts = ['Cohort'];
+          if (state.selectedGrade){
+            var cohortGradeInfo = buildGradeDisplay(selectedEntries[0], selectedGradeNumber, selectedEntries[0] ? selectedEntries[0].year : null);
+            cohortLabelParts.push(cohortGradeInfo.primary);
+            if (cohortGradeInfo.meta){
+              cohortLabelParts.push(cohortGradeInfo.meta);
+            }
+          } else {
+            cohortLabelParts.push(selectedEntries[0].grade_label || selectedEntries[0].grade_id);
+          }
+          noteEl.textContent = cohortLabelParts.join(' · ');
+        } else {
+          noteEl.textContent = state.selectedGrade ? ('Cohort · Grade ' + state.selectedGrade) : 'Cohort';
+        }
         updateCohortSummary(selectedEntries[0], runIds.length);
         renderCohortTable(filteredEntries);
 
         Promise.all(runIds.map(fetchRunComparison)).then(function(){
           var markers = [];
           runIds.forEach(function(runId){
-            var comparison = state.runComparisons[runId];
+            var comparisonKey = runId + '_' + state.aggregationStrategy;
+            var comparison = state.runComparisons[comparisonKey];
             if (!comparison || !comparison.entries) return;
-            var entry = comparison.entries.find(function(item){ return item.year === state.selectedYear && item.grade_id === state.selectedGrade; });
-            if (entry && entry.human_percentile !== null && entry.human_percentile !== undefined){
-              markers.push({
-                label: labelForRun(state.runs.find(function(run){ return run.run_id === runId; })),
-                score: entry.llm_total,
-                percentile: entry.human_percentile,
-              });
+            var entry = comparison.entries.find(function(item){
+              return item.year === state.selectedYear && entryHasGrade(item, selectedGradeNumber);
+            });
+            if (entry){
+              var entryMetrics = deriveGradeMetrics(entry, selectedGradeNumber);
+              if (entryMetrics.humanPercentile !== null && entryMetrics.humanPercentile !== undefined){
+                markers.push({
+                  label: labelForRun(state.runs.find(function(run){ return run.run_id === runId; })),
+                  score: entry.llm_total,
+                  percentile: entryMetrics.humanPercentile,
+                });
+              }
             }
           });
           updateCohortCharts(selectedEntries, markers);
@@ -2886,12 +3464,13 @@
     if (aggregationStrategySelect){
       aggregationStrategySelect.addEventListener('change', function(){
         state.aggregationStrategy = this.value;
-        if (state.selectedRun){
-          // Clear cache for this run and reload
-          var oldCacheKey = state.selectedRun + '_' + (state.aggregationStrategy === 'best' ? 'average' : 'best');
-          delete state.runComparisons[oldCacheKey];
-          updateView();
-        }
+        state.runComparisons = {};
+        state.runSummaries = {};
+        state.cohortCache = {};
+        state.cohortSummaries = {};
+        state.currentRunSummary = null;
+        state.currentRunSummaryKey = null;
+        updateView();
       });
     }
 
@@ -2907,6 +3486,12 @@
           btn.classList.toggle('is-active', btn.dataset.value === value);
         });
 
+        state.runSummaries = {};
+        state.cohortSummaries = {};
+        state.currentRunSummary = null;
+        state.currentRunSummaryKey = null;
+        updateBaselineHighlights();
+
         if (state.selectedView === 'run') {
           renderRunView();
         } else {
@@ -2918,6 +3503,7 @@
     populateRunSelectors();
     updateGroupingMode();
     updateView();
+    updateBaselineHighlights();
   }
 
   document.addEventListener('DOMContentLoaded', function(){

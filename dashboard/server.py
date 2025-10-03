@@ -7,7 +7,7 @@ import io
 from collections import defaultdict
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Literal
 
 import numpy as np
 from fastapi import Body, FastAPI, HTTPException, Query, Request, Form
@@ -25,6 +25,11 @@ from .human_baseline import HumanBaselineIndex
 from .human_compare import (
     compute_cohort_human_comparison,
     compute_run_human_comparison,
+)
+from .human_stats import (
+    compute_cohort_summary,
+    compute_human_baseline_summary,
+    compute_run_summary,
 )
 
 DEFAULT_RUNS_DIR = Path("runs")
@@ -148,6 +153,21 @@ def create_app(
                 if lowered in {"asc", "desc"}:
                     filters.sort_dir = lowered
         return filters
+
+    def _parse_thresholds_param(raw: Optional[str]) -> Optional[List[float]]:
+        if raw is None or not raw.strip():
+            return None
+        parts = [segment.strip() for segment in raw.split(",") if segment.strip()]
+        thresholds: List[float] = []
+        for segment in parts:
+            try:
+                value = float(segment)
+            except ValueError:
+                continue
+            if value < 0:
+                continue
+            thresholds.append(value / 100.0 if value >= 1 else value)
+        return thresholds or None
 
     @app.on_event("startup")
     async def _startup() -> None:
@@ -347,6 +367,40 @@ def create_app(
         except RunNotFoundError as exc:
             raise HTTPException(status_code=404, detail=str(exc))
 
+    @app.get(
+        "/api/humans/stats/run/{run_id}",
+        response_model=schemas.HumanComparisonSummaryResponse,
+    )
+    async def api_human_stats_run(
+        run_id: str,
+        comparator: Literal["average", "best"] = Query("average"),
+        weight_mode: Literal["micro", "macro"] = Query("micro"),
+        late_year_strategy: str = Query("best"),
+        top_limit: int = Query(5, ge=1, le=50),
+        thresholds: Optional[str] = Query(
+            None,
+            description="Optional comma-separated thresholds in either fraction (0.05) or percentage (5) form.",
+        ),
+    ) -> schemas.HumanComparisonSummaryResponse:
+        custom_thresholds = _parse_thresholds_param(thresholds)
+        extra_kwargs = {}
+        if custom_thresholds:
+            extra_kwargs["thresholds"] = custom_thresholds
+        try:
+            summary = compute_run_summary(
+                run_id,
+                index,
+                humans,
+                comparator=comparator,
+                weight_mode=weight_mode,
+                late_year_strategy=late_year_strategy,
+                top_limit=top_limit,
+                **extra_kwargs,
+            )
+        except RunNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc))
+        return schemas.HumanComparisonSummaryResponse(summary=summary)
+
     @app.post(
         "/api/humans/compare/aggregate",
         response_model=schemas.HumanCohortComparisonResponse,
@@ -357,6 +411,43 @@ def create_app(
         if not run_ids:
             raise HTTPException(status_code=400, detail="run_ids must not be empty")
         return compute_cohort_human_comparison(run_ids, index, humans)
+
+    @app.post(
+        "/api/humans/stats/cohort",
+        response_model=schemas.HumanComparisonSummaryResponse,
+    )
+    async def api_human_stats_cohort(
+        payload: schemas.HumanCohortSummaryRequest,
+    ) -> schemas.HumanComparisonSummaryResponse:
+        if not payload.run_ids:
+            raise HTTPException(status_code=400, detail="run_ids must not be empty")
+        custom_thresholds = payload.thresholds or None
+        extra_kwargs = {}
+        if custom_thresholds:
+            extra_kwargs["thresholds"] = custom_thresholds
+        try:
+            summary = compute_cohort_summary(
+                payload.run_ids,
+                index,
+                humans,
+                comparator=payload.comparator,
+                weight_mode=payload.weight_mode,
+                late_year_strategy=payload.late_year_strategy,
+                top_limit=payload.top_limit,
+                **extra_kwargs,
+            )
+        except RunNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc))
+        return schemas.HumanComparisonSummaryResponse(summary=summary)
+
+    @app.get(
+        "/api/humans/stats/human-baseline",
+        response_model=schemas.HumanBaselineSummary,
+    )
+    async def api_human_baseline_stats(
+        comparator: Literal["average", "best"] = Query("average"),
+    ) -> schemas.HumanBaselineSummary:
+        return compute_human_baseline_summary(humans, comparator=comparator)
 
     @app.get("/api/runs/{run_id}", response_model=schemas.RunDetail)
     async def api_run_detail(run_id: str) -> schemas.RunDetail:

@@ -1827,6 +1827,22 @@ section h3 {
   font-size: 0.875rem;
 }
 
+.comparison-table .grade-primary {
+  font-weight: 600;
+}
+
+.comparison-table .grade-meta {
+  margin-top: 0.15rem;
+  font-size: 0.78rem;
+  color: var(--muted);
+}
+
+.table-note {
+  margin-top: 0.5rem;
+  font-size: 0.78rem;
+  color: var(--muted);
+}
+
 /* Alternating band backgrounds for grouped rows */
 .comparison-table tbody tr.band-even {
   background: var(--bg-elevated);

@@ -395,6 +395,19 @@ class HumanBinComparison(BaseModel):
     delta_smoothed: float
 
 
+class HumanMemberComparison(BaseModel):
+    grade_id: str
+    grade_label: str
+    members: List[int] = Field(default_factory=list)
+    max_points: Optional[float] = None
+    total_count: Optional[int] = None
+    human_mean: Optional[float] = None
+    human_std: Optional[float] = None
+    human_best: Optional[float] = None
+    human_percentile: Optional[float] = None
+    z_score: Optional[float] = None
+
+
 class HumanRunGradeComparison(BaseModel):
     year: int
     grade_id: str
@@ -414,6 +427,7 @@ class HumanRunGradeComparison(BaseModel):
     human_best: Optional[float] = None
     bin_comparison: List[HumanBinComparison] = Field(default_factory=list)
     notes: List[str] = Field(default_factory=list)
+    member_overrides: Dict[str, HumanMemberComparison] = Field(default_factory=dict)
 
 
 class HumanRunComparisonResponse(BaseModel):
@@ -430,6 +444,8 @@ class HumanAggregateEntry(BaseModel):
     run_count: int
     sample_count: int
     avg_llm_score_pct: Optional[float] = None
+    avg_human_mean_pct: Optional[float] = None
+    avg_human_best_pct: Optional[float] = None
     avg_human_percentile: Optional[float] = None
     median_percentile: Optional[float] = None
     p25_percentile: Optional[float] = None
@@ -441,6 +457,7 @@ class HumanAggregateEntry(BaseModel):
     worst_run_id: Optional[str] = None
     bin_comparison: List[HumanBinComparison] = Field(default_factory=list)
     notes: List[str] = Field(default_factory=list)
+    member_overrides: Dict[str, HumanMemberComparison] = Field(default_factory=dict)
 
 
 class HumanAggregateStats(BaseModel):
@@ -453,6 +470,80 @@ class HumanCohortComparisonResponse(BaseModel):
     micro: HumanAggregateStats
     macro: HumanAggregateStats
     notes: List[str] = Field(default_factory=list)
+
+
+class HumanComparisonTopCell(BaseModel):
+    year: int
+    grade_id: str
+    grade_label: str
+    members: List[int] = Field(default_factory=list)
+    llm_score_pct: Optional[float] = None
+    human_score_pct: Optional[float] = None
+    gap_score_pct: Optional[float] = None
+    gap_points: Optional[float] = None
+    human_percentile: Optional[float] = None
+    z_score: Optional[float] = None
+    llm_total: Optional[float] = None
+    human_score: Optional[float] = None
+
+
+class HumanComparisonBestYear(BaseModel):
+    year: int
+    avg_percentile: Optional[float] = None
+    avg_gap_pct: Optional[float] = None
+    avg_score_pct: Optional[float] = None
+
+
+class HumanComparisonBestGrade(BaseModel):
+    grade_id: str
+    grade_label: str
+    avg_percentile: Optional[float] = None
+    avg_gap_pct: Optional[float] = None
+    avg_score_pct: Optional[float] = None
+
+
+class HumanComparisonThresholdBreakdown(BaseModel):
+    threshold_pp: float
+    llm_win_count: int = 0
+    human_win_count: int = 0
+
+
+class HumanComparisonSummary(BaseModel):
+    run_ids: List[str] = Field(default_factory=list)
+    comparator: Literal["average", "best"] = "average"
+    weight_mode: Literal["micro", "macro"] = "micro"
+    total_cells: int = 0
+    llm_win_count: int = 0
+    human_win_count: int = 0
+    tie_count: int = 0
+    avg_percentile: Optional[float] = None
+    avg_z_score: Optional[float] = None
+    avg_gap_pct: Optional[float] = None
+    top_llm_wins: List[HumanComparisonTopCell] = Field(default_factory=list)
+    top_human_wins: List[HumanComparisonTopCell] = Field(default_factory=list)
+    best_year: Optional[HumanComparisonBestYear] = None
+    best_grade: Optional[HumanComparisonBestGrade] = None
+    threshold_breakdown: List[HumanComparisonThresholdBreakdown] = Field(default_factory=list)
+
+
+class HumanComparisonSummaryResponse(BaseModel):
+    summary: HumanComparisonSummary
+
+
+class HumanBaselineSummary(BaseModel):
+    comparator: Literal["average", "best"] = "average"
+    best_year: Optional[HumanComparisonBestYear] = None
+    best_grade: Optional[HumanComparisonBestGrade] = None
+    notes: List[str] = Field(default_factory=list)
+
+
+class HumanCohortSummaryRequest(BaseModel):
+    run_ids: List[str] = Field(default_factory=list)
+    comparator: Literal["average", "best"] = "average"
+    weight_mode: Literal["micro", "macro"] = "micro"
+    late_year_strategy: str = "best"
+    top_limit: int = Field(default=5, ge=1, le=50)
+    thresholds: List[float] = Field(default_factory=list)
 
 
 class SubsetMetrics(BaseModel):

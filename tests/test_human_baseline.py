@@ -222,6 +222,10 @@ def test_human_endpoints(tmp_path):
     assert pytest.approx(grade3_entry["llm_points_awarded"], rel=1e-6) == 5.75
     assert pytest.approx(grade3_entry["llm_points_available"], rel=1e-6) == 12.0
     assert grade3_entry["bin_comparison"][2]["llm_share"] == 1.0
+    assert "member_overrides" in grade3_entry and "3" in grade3_entry["member_overrides"]
+    override3 = grade3_entry["member_overrides"]["3"]
+    assert override3["grade_label"] == "3"
+    assert override3["human_mean"] is not None
 
     cohort = client.post(
         "/api/humans/compare/aggregate",
@@ -230,3 +234,44 @@ def test_human_endpoints(tmp_path):
     assert cohort["micro"]["entries"]
     micro_grade3 = next(entry for entry in cohort["micro"]["entries"] if entry["grade_id"] == "3")
     assert micro_grade3["sample_count"] == 2
+    assert "member_overrides" in micro_grade3 and "3" in micro_grade3["member_overrides"]
+
+    run_summary = client.get(
+        f"/api/humans/stats/run/{run1}",
+        params={"comparator": "average", "late_year_strategy": "best"},
+    ).json()
+    summary_payload = run_summary["summary"]
+    assert summary_payload["run_ids"] == [run1]
+    assert summary_payload["total_cells"] == 2
+    assert summary_payload["llm_win_count"] == 0
+    assert summary_payload["human_win_count"] == 2
+    assert summary_payload["top_llm_wins"] == []
+    assert summary_payload["top_human_wins"], "expected at least one strong human win"
+    assert summary_payload["best_year"]["year"] == 2008
+    assert summary_payload["best_grade"]["grade_id"] in {"3", "4"}
+
+    cohort_summary = client.post(
+        "/api/humans/stats/cohort",
+        json={
+            "run_ids": [run1, run2],
+            "comparator": "average",
+            "weight_mode": "micro",
+            "late_year_strategy": "best",
+        },
+    ).json()
+    cohort_payload = cohort_summary["summary"]
+    assert cohort_payload["run_ids"] == sorted([run1, run2])
+    assert cohort_payload["total_cells"] == 4
+
+    baseline_summary = client.get(
+        "/api/humans/stats/human-baseline",
+        params={"comparator": "average"},
+    ).json()
+    assert baseline_summary["best_year"]["year"] == 2008
+    assert baseline_summary["best_grade"]["grade_id"] in {"3", "4"}
+
+    best_comparator_run = client.get(
+        f"/api/humans/stats/run/{run1}",
+        params={"comparator": "best"},
+    ).json()
+    assert best_comparator_run["summary"]["comparator"] == "best"

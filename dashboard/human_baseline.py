@@ -151,6 +151,7 @@ class HumanGradeStats:
     cdf_points: List[Tuple[float, float]]
     mean_estimate: Optional[float]
     stddev_estimate: Optional[float]
+    best_score_estimate: Optional[float]
 
     def percentile(self, score: float) -> Optional[float]:
         """Approximate percentile for ``score`` on the grade's own scale."""
@@ -468,6 +469,13 @@ def _build_grade_stats(
         mean_estimate = mean
         stddev_estimate = math.sqrt(max(variance, 0.0))
 
+    best_score_estimate: Optional[float] = None
+    if total_count > 0:
+        for rng, count in ascending:
+            if count > 0:
+                best_score_estimate = rng.max
+                break
+
     return HumanGradeStats(
         id=grade_id,
         label=label,
@@ -481,6 +489,7 @@ def _build_grade_stats(
         cdf_points=cdf_points,
         mean_estimate=mean_estimate,
         stddev_estimate=stddev_estimate,
+        best_score_estimate=best_score_estimate,
     )
 
 
@@ -511,6 +520,7 @@ def _grade_to_schema(grade: HumanGradeStats) -> schemas.HumanGradeSummary:
         avg_score_reported=grade.avg_score_reported,
         mean_estimate=grade.mean_estimate,
         stddev_estimate=grade.stddev_estimate,
+        best_estimate=grade.best_score_estimate,
     )
 
 

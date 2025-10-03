@@ -83,6 +83,13 @@
               <option value="grade">Grade → Year</option>
             </select>
           </label>
+          <label class="control-label">
+            <span class="label-text">Compare With</span>
+            <div class="button-group" id="human-comparison-source">
+              <button type="button" class="button-group__button is-active" data-value="average">Average</button>
+              <button type="button" class="button-group__button" data-value="best">Best</button>
+            </div>
+          </label>
           <label id="human-year-select-wrapper" class="control-label">
             <span class="label-text">Year</span>
             <select id="human-year-select" class="control-select"></select>
@@ -161,10 +168,14 @@
               </div>
               
               <div class="comparison-item comparison-item--human">
-                <span class="comparison-label">Human Average</span>
-                <div class="comparison-values">
+                <span class="comparison-label" id="human-comparison-label">Human Average</span>
+                <div class="comparison-values" id="human-avg-score-wrapper">
                   <span class="comparison-value" id="human-avg-score">–</span>
                   <span class="comparison-pct" id="human-avg-pct">–</span>
+                </div>
+                <div class="comparison-values" id="human-best-score-wrapper" style="display: none;">
+                  <span class="comparison-value" id="human-best-score">–</span>
+                  <span class="comparison-pct" id="human-best-pct">–</span>
                 </div>
                 <span class="comparison-note">σ=<span id="human-std-dev">–</span>, n=<span id="human-total-count">–</span></span>
               </div>
@@ -234,8 +245,8 @@
           <tr>
             <th class="col-score">Score</th>
             <th class="col-pct">Score %</th>
-            <th class="col-avg">Avg (μ)</th>
-            <th class="col-pct">Avg %</th>
+            <th class="col-avg" id="human-score-col-header">Avg (μ)</th>
+            <th class="col-pct" id="human-score-pct-col-header">Avg %</th>
             <th class="col-std">Std (σ)</th>
             <th class="col-percentile">Percentile</th>
             <th class="col-gap">Point Gap</th>

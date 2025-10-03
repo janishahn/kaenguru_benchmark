@@ -136,6 +136,7 @@ def compute_run_human_comparison(
                 z_score=z_score,
                 human_mean=grade_stats.mean_estimate,
                 human_std=grade_stats.stddev_estimate,
+                human_best=grade_stats.best_score_estimate,
                 bin_comparison=bin_comparison,
                 notes=[],
             )

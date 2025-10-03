@@ -338,6 +338,7 @@ class HumanGradeSummary(BaseModel):
     avg_score_reported: Optional[float] = None
     mean_estimate: Optional[float] = None
     stddev_estimate: Optional[float] = None
+    best_estimate: Optional[float] = None
 
 
 class HumanYearSummary(BaseModel):
@@ -410,6 +411,7 @@ class HumanRunGradeComparison(BaseModel):
     z_score: Optional[float] = None
     human_mean: Optional[float] = None
     human_std: Optional[float] = None
+    human_best: Optional[float] = None
     bin_comparison: List[HumanBinComparison] = Field(default_factory=list)
     notes: List[str] = Field(default_factory=list)
 

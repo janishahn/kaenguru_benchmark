@@ -1451,6 +1451,40 @@ section h3 {
   outline-offset: 2px;
 }
 
+.button-group {
+  display: flex;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  overflow: hidden;
+  background: var(--bg);
+}
+
+.button-group__button {
+  flex: 1 1 0;
+  padding: 0.5rem;
+  border: none;
+  background: transparent;
+  color: var(--text);
+  font-size: 0.875rem;
+  font-family: inherit;
+  cursor: pointer;
+  transition: background 0.2s ease;
+}
+
+.button-group__button:not(:last-child) {
+  border-right: 1px solid var(--border);
+}
+
+.button-group__button.is-active {
+  background: var(--accent);
+  color: #fff;
+  font-weight: 600;
+}
+
+.button-group__button:not(.is-active):hover {
+  background: var(--bg-hover);
+}
+
 .overview-summary {
   margin-bottom: 3rem;
 }

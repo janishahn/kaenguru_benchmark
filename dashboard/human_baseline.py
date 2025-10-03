@@ -451,11 +451,12 @@ def _build_grade_stats(
     else:
         probabilities = [0.0 for _ in counts_list]
 
-    ascending = list(reversed(list(zip(bin_ranges, counts_list))))
+    descending_bins = list(zip(bin_ranges, counts_list))
+    ascending_bins = list(reversed(descending_bins))
     cdf_points: List[Tuple[float, float]] = []
     if total_count > 0:
         cumulative = 0
-        for rng, count in ascending:
+        for rng, count in ascending_bins:
             cumulative += count
             cdf_points.append((rng.max, cumulative / total_count))
         cdf_points.sort(key=lambda item: item[0])
@@ -471,7 +472,7 @@ def _build_grade_stats(
 
     best_score_estimate: Optional[float] = None
     if total_count > 0:
-        for rng, count in ascending:
+        for rng, count in descending_bins:
             if count > 0:
                 best_score_estimate = rng.max
                 break

@@ -588,6 +588,7 @@ def _get_aggregated_grade_stats(
                 cdf_points=base_grade.cdf_points.copy(),
                 mean_estimate=base_grade.mean_estimate,
                 stddev_estimate=base_grade.stddev_estimate,
+                best_score_estimate=base_grade.best_score_estimate,
             )
     
     elif strategy == "average":

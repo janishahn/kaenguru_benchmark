@@ -359,6 +359,7 @@
     var humanZScoreNote = $('#run-human-zscore-note');
     var humanScoreValue = $('#run-human-score');
     var humanScoreNote = $('#run-human-score-note');
+    var humanHelp = $('#human-baseline-help');
 
     function updatePresetSelect(){
       var presets = loadPresets();
@@ -964,14 +965,23 @@
       if (!humanCards) return;
       if (!entry){
         humanCards.hidden = true;
+        if (humanHelp){
+          humanHelp.hidden = true;
+        }
         return;
       }
       humanCards.hidden = false;
+      if (humanHelp){
+        humanHelp.hidden = false;
+        humanHelp.textContent = 'Top grade (by human percentile). LLM totals include the official start capital and -¼ penalties for wrong or unparsed answers.';
+      }
+      var gradeLabel = entry.grade_label || entry.grade_id || '';
+      var gradeDisplay = gradeLabel ? 'Grade ' + gradeLabel : (entry.grade_id ? 'Grade ' + entry.grade_id : '');
       if (humanPercentileValue){
         humanPercentileValue.textContent = formatPercent(entry.human_percentile);
       }
       if (humanPercentileNote){
-        humanPercentileNote.textContent = entry.grade_label || entry.grade_id || '';
+        humanPercentileNote.textContent = gradeDisplay;
       }
       if (humanZScoreValue){
         if (entry.z_score !== null && entry.z_score !== undefined){
@@ -981,7 +991,17 @@
         }
       }
       if (humanZScoreNote){
-        humanZScoreNote.textContent = entry.human_std ? 'σ ≈ ' + entry.human_std.toFixed(2) : '';
+        var zParts = [];
+        if (gradeDisplay){
+          zParts.push(gradeDisplay);
+        }
+        if (entry.human_mean !== null && entry.human_mean !== undefined){
+          zParts.push('μ ≈ ' + formatNumber(entry.human_mean, 1));
+        }
+        if (entry.human_std){
+          zParts.push('σ ≈ ' + formatNumber(entry.human_std, 2));
+        }
+        humanZScoreNote.textContent = zParts.join(' • ');
       }
       if (humanScoreValue){
         if (entry.llm_total !== null && entry.llm_max !== null){
@@ -991,12 +1011,33 @@
         }
       }
       if (humanScoreNote){
-        humanScoreNote.textContent = entry.grade_label || entry.grade_id || '';
+        var scoreParts = [];
+        if (gradeDisplay){
+          scoreParts.push(gradeDisplay);
+        }
+        if (entry.llm_start_points !== null && entry.llm_start_points !== undefined){
+          scoreParts.push('Start ' + formatNumber(entry.llm_start_points, 0));
+        }
+        var runMax = 0;
+        if (entry.llm_points_available !== null && entry.llm_points_available !== undefined){
+          runMax = Number(entry.llm_points_available);
+        }
+        if (entry.llm_start_points !== null && entry.llm_start_points !== undefined){
+          runMax += Number(entry.llm_start_points);
+        }
+        if (runMax){
+          scoreParts.push('Run max ' + formatNumber(runMax, 1));
+        }
+        if (entry.max_points !== null && entry.max_points !== undefined){
+          scoreParts.push('Official max ' + formatNumber(entry.max_points, 0));
+        }
+        humanScoreNote.textContent = scoreParts.join(' • ');
       }
     }
 
     function loadHumanComparison(){
-      fetchJSON('/api/humans/compare/run/' + runId)
+      var url = '/api/humans/compare/run/' + runId + '?late_year_strategy=' + encodeURIComponent(state.aggregationStrategy);
+      fetchJSON(url)
         .then(function(payload){
           state.humanComparison = payload;
           if (!payload || !payload.entries || !payload.entries.length){
@@ -1602,7 +1643,10 @@
       selectedRuns: [],
       selectedYear: null,
       selectedGrade: null,
+      selectedTableView: 'all-years',
+      selectedGroupingMode: 'year',
       selectedCohortType: 'micro',
+      aggregationStrategy: 'best',
       runComparisons: {},
       cohortCache: {},
       yearSummaryCache: {},
@@ -1619,10 +1663,16 @@
     var viewSelect = $('#human-view-select');
     var runSelect = $('#human-run-select');
     var runSelectWrapper = $('#human-run-select-wrapper');
-    var runMulti = $('#human-run-multi');
+    var runChecklist = $('#human-run-checklist');
     var runMultiWrapper = $('#human-run-multi-wrapper');
+    var runSelectAllBtn = $('#human-run-select-all');
+    var runClearBtn = $('#human-run-clear');
+    var groupingModeSelect = $('#human-grouping-mode');
     var yearSelect = $('#human-year-select');
+    var yearSelectWrapper = $('#human-year-select-wrapper');
     var gradeSelect = $('#human-grade-select');
+    var gradeSelectWrapper = $('#human-grade-select-wrapper');
+    var tableViewSelect = $('#human-table-view');
     var cohortTypeSelect = $('#human-cohort-type');
     var cohortTypeWrapper = $('#human-cohort-type-wrapper');
     var noteEl = $('#human-baseline-note');
@@ -1638,8 +1688,6 @@
     var runPercentileNote = $('#human-run-percentile-note');
     var runZScore = $('#human-run-zscore');
     var runZScoreNote = $('#human-run-zscore-note');
-    var runScore = $('#human-run-score');
-    var runScoreNote = $('#human-run-score-note');
 
     var cdfCanvas = $('#human-cdf-chart');
     var heatmapCanvas = $('#human-heatmap-chart');
@@ -1670,8 +1718,8 @@
       if (runSelect){
         runSelect.innerHTML = '';
       }
-      if (runMulti){
-        runMulti.innerHTML = '';
+      if (runChecklist){
+        runChecklist.innerHTML = '';
       }
       state.runs.forEach(function(run){
         var label = labelForRun(run) + ' · ' + run.run_id;
@@ -1681,11 +1729,21 @@
           opt.textContent = label;
           runSelect.appendChild(opt);
         }
-        if (runMulti){
-          var optMulti = document.createElement('option');
-          optMulti.value = run.run_id;
-          optMulti.textContent = label;
-          runMulti.appendChild(optMulti);
+        if (runChecklist){
+          var labelEl = document.createElement('label');
+          labelEl.className = 'checkbox-label';
+          var cb = document.createElement('input');
+          cb.type = 'checkbox';
+          cb.value = run.run_id;
+          cb.addEventListener('change', function(){
+            state.selectedRuns = getSelectedRuns();
+            renderCohortView();
+          });
+          var span = document.createElement('span');
+          span.textContent = label;
+          labelEl.appendChild(cb);
+          labelEl.appendChild(span);
+          runChecklist.appendChild(labelEl);
         }
       });
       if (!state.selectedRun && state.runs.length){
@@ -1693,6 +1751,25 @@
       }
       if (runSelect && state.selectedRun){
         setSelectedOption(runSelect, state.selectedRun);
+      }
+    }
+
+    function updateGroupingMode(){
+      var mode = state.selectedGroupingMode || 'year';
+      if (mode === 'year'){
+        if (yearSelectWrapper) yearSelectWrapper.style.order = '1';
+        if (gradeSelectWrapper) gradeSelectWrapper.style.order = '2';
+        populateYearSelect();
+        if (state.selectedYear){
+          populateGradeSelect(state.selectedYear);
+        }
+      } else {
+        if (gradeSelectWrapper) gradeSelectWrapper.style.order = '1';
+        if (yearSelectWrapper) yearSelectWrapper.style.order = '2';
+        populateAllGradeOptions();
+        if (state.selectedGrade){
+          populateYearsForGrade(state.selectedGrade);
+        }
       }
     }
 
@@ -1708,6 +1785,52 @@
       });
       if (!state.selectedYear && years.length){
         state.selectedYear = years[0].year;
+      }
+      if (state.selectedYear && yearSelect.options.length){
+        setSelectedOption(yearSelect, String(state.selectedYear));
+      }
+    }
+
+    function populateAllGradeOptions(){
+      if (!gradeSelect) return;
+      gradeSelect.innerHTML = '';
+      var gradeSet = new Set();
+      state.years.forEach(function(yearEntry){
+        if (yearEntry.ui_groups){
+          Object.keys(yearEntry.ui_groups).forEach(function(gradeKey){
+            gradeSet.add(gradeKey);
+          });
+        }
+      });
+      var grades = Array.from(gradeSet).sort();
+      grades.forEach(function(gradeKey){
+        var option = document.createElement('option');
+        option.value = gradeKey;
+        option.textContent = gradeKey;
+        gradeSelect.appendChild(option);
+      });
+      if (!state.selectedGrade && grades.length){
+        state.selectedGrade = grades[0];
+      }
+      if (state.selectedGrade && gradeSelect.options.length){
+        setSelectedOption(gradeSelect, state.selectedGrade);
+      }
+    }
+
+    function populateYearsForGrade(gradeKey){
+      if (!yearSelect) return;
+      yearSelect.innerHTML = '';
+      var yearsWithGrade = state.years.filter(function(yearEntry){
+        return yearEntry.ui_groups && yearEntry.ui_groups[gradeKey];
+      }).sort(function(a, b){ return a.year - b.year; });
+      yearsWithGrade.forEach(function(entry){
+        var option = document.createElement('option');
+        option.value = String(entry.year);
+        option.textContent = String(entry.year);
+        yearSelect.appendChild(option);
+      });
+      if (!state.selectedYear && yearsWithGrade.length){
+        state.selectedYear = yearsWithGrade[0].year;
       }
       if (state.selectedYear && yearSelect.options.length){
         setSelectedOption(yearSelect, String(state.selectedYear));
@@ -1738,28 +1861,30 @@
     }
 
     function getSelectedRuns(){
-      if (!runMulti) return [];
-      return Array.from(runMulti.selectedOptions).map(function(opt){ return opt.value; });
+      if (!runChecklist) return [];
+      var boxes = runChecklist.querySelectorAll('input[type="checkbox"]');
+      return Array.from(boxes).filter(function(cb){ return cb.checked; }).map(function(cb){ return cb.value; });
     }
 
     function ensureCohortDefaults(){
       if (!state.selectedRuns.length && state.runs.length){
         state.selectedRuns = state.runs.slice(0, Math.min(3, state.runs.length)).map(function(run){ return run.run_id; });
-        if (runMulti){
-          Array.from(runMulti.options).forEach(function(opt){
-            opt.selected = state.selectedRuns.indexOf(opt.value) !== -1;
-          });
+        if (runChecklist){
+          var boxes = runChecklist.querySelectorAll('input[type="checkbox"]');
+          Array.from(boxes).forEach(function(cb){ cb.checked = state.selectedRuns.indexOf(cb.value) !== -1; });
         }
       }
     }
 
     function fetchRunComparison(runId){
-      if (state.runComparisons[runId]){
-        return Promise.resolve(state.runComparisons[runId]);
+      var cacheKey = runId + '_' + state.aggregationStrategy;
+      if (state.runComparisons[cacheKey]){
+        return Promise.resolve(state.runComparisons[cacheKey]);
       }
-      return fetchJSON('/api/humans/compare/run/' + encodeURIComponent(runId))
+      var url = '/api/humans/compare/run/' + encodeURIComponent(runId) + '?late_year_strategy=' + encodeURIComponent(state.aggregationStrategy);
+      return fetchJSON(url)
         .then(function(payload){
-          state.runComparisons[runId] = payload;
+          state.runComparisons[cacheKey] = payload;
           return payload;
         })
         .catch(function(err){
@@ -1843,35 +1968,159 @@
     }
 
     function updateRunSummary(entry){
+      var runRating = $('#human-run-rating');
+      var runRatingNote = $('#human-run-rating-note');
+      
+      var llmTotalScore = $('#llm-total-score');
+      var llmScorePct = $('#llm-score-pct');
+      var llmPointsEarned = $('#llm-points-earned');
+      var llmMaxPoints = $('#llm-max-points');
+      
+      var humanAvgScore = $('#human-avg-score');
+      var humanAvgPct = $('#human-avg-pct');
+      var humanStdDev = $('#human-std-dev');
+      var humanTotalCount = $('#human-total-count');
+      
+      var gapScoreDiff = $('#gap-score-diff');
+      var gapScoreNote = $('#gap-score-note');
+      var gapPctDiff = $('#gap-pct-diff');
+      var gapPctNote = $('#gap-pct-note');
+      
       if (!entry){
         runPercentile.textContent = '–';
         runPercentileNote.textContent = '';
         runZScore.textContent = '–';
         runZScoreNote.textContent = '';
-        runScore.textContent = '–';
-        runScoreNote.textContent = '';
+        if (runRating) runRating.textContent = '–';
+        if (runRatingNote) runRatingNote.textContent = '';
+        
+        if (llmTotalScore) llmTotalScore.textContent = '–';
+        if (llmScorePct) llmScorePct.textContent = '–';
+        if (llmPointsEarned) llmPointsEarned.textContent = '–';
+        if (llmMaxPoints) llmMaxPoints.textContent = '–';
+        
+        if (humanAvgScore) humanAvgScore.textContent = '–';
+        if (humanAvgPct) humanAvgPct.textContent = '–';
+        if (humanStdDev) humanStdDev.textContent = '–';
+        if (humanTotalCount) humanTotalCount.textContent = '–';
+        
+        if (gapScoreDiff) gapScoreDiff.textContent = '–';
+        if (gapScoreNote) gapScoreNote.textContent = '';
+        if (gapPctDiff) gapPctDiff.textContent = '–';
+        if (gapPctNote) gapPctNote.textContent = '';
         return;
       }
+      
       if (entry.human_percentile !== null && entry.human_percentile !== undefined){
         runPercentile.textContent = formatPercent(entry.human_percentile);
-        runPercentileNote.textContent = entry.grade_label;
+        var pctValue = entry.human_percentile * 100;
+        if (pctValue >= 99) runPercentileNote.textContent = 'Exceptional - Top 1%';
+        else if (pctValue >= 95) runPercentileNote.textContent = 'Excellent - Top 5%';
+        else if (pctValue >= 75) runPercentileNote.textContent = 'Good - Top 25%';
+        else if (pctValue >= 50) runPercentileNote.textContent = 'Above average';
+        else if (pctValue >= 25) runPercentileNote.textContent = 'Below average';
+        else runPercentileNote.textContent = 'Low performance';
       } else {
         runPercentile.textContent = '–';
         runPercentileNote.textContent = 'Human percentile unavailable';
       }
+      
       if (entry.z_score !== null && entry.z_score !== undefined){
         runZScore.textContent = entry.z_score.toFixed(2);
-        runZScoreNote.textContent = entry.grade_label;
+        var zVal = entry.z_score;
+        if (zVal >= 3.0) runZScoreNote.textContent = '+3σ - Exceptional';
+        else if (zVal >= 2.0) runZScoreNote.textContent = '+2σ - Excellent';
+        else if (zVal >= 1.0) runZScoreNote.textContent = '+1σ - Good';
+        else if (zVal >= 0) runZScoreNote.textContent = 'Above mean';
+        else if (zVal >= -1.0) runZScoreNote.textContent = 'Below mean';
+        else runZScoreNote.textContent = 'Well below mean';
       } else {
         runZScore.textContent = '–';
         runZScoreNote.textContent = 'Human variance unavailable';
       }
-      if (entry.llm_total !== null && entry.llm_max !== null){
-        runScore.textContent = formatScore(entry.llm_total) + ' / ' + formatScore(entry.llm_max);
-        runScoreNote.textContent = entry.grade_label;
-      } else {
-        runScore.textContent = '–';
-        runScoreNote.textContent = '';
+      
+      
+      if (runRating && runRatingNote){
+        if (entry.human_percentile !== null){
+          var percentile = entry.human_percentile;
+          if (percentile >= 0.99){
+            runRating.textContent = '⭐⭐⭐⭐⭐';
+            runRatingNote.textContent = 'Exceptional';
+          } else if (percentile >= 0.95){
+            runRating.textContent = '⭐⭐⭐⭐';
+            runRatingNote.textContent = 'Excellent';
+          } else if (percentile >= 0.75){
+            runRating.textContent = '⭐⭐⭐';
+            runRatingNote.textContent = 'Good';
+          } else if (percentile >= 0.50){
+            runRating.textContent = '⭐⭐';
+            runRatingNote.textContent = 'Average';
+          } else {
+            runRating.textContent = '⭐';
+            runRatingNote.textContent = 'Below average';
+          }
+        } else {
+          runRating.textContent = '–';
+          runRatingNote.textContent = '';
+        }
+      }
+      
+      if (llmTotalScore) llmTotalScore.textContent = entry.llm_total !== null ? formatScore(entry.llm_total) : '–';
+      if (llmScorePct) llmScorePct.textContent = entry.llm_score_pct !== null ? formatPercent(entry.llm_score_pct) : '–';
+      if (llmPointsEarned) llmPointsEarned.textContent = entry.llm_points_awarded !== null ? formatScore(entry.llm_points_awarded) : '–';
+      if (llmMaxPoints) llmMaxPoints.textContent = entry.llm_max !== null ? formatScore(entry.llm_max) : '–';
+      
+      if (humanAvgScore) humanAvgScore.textContent = entry.human_mean !== null ? formatScore(entry.human_mean) : '–';
+      if (humanStdDev) humanStdDev.textContent = entry.human_std !== null ? formatScore(entry.human_std) : '–';
+      
+      if (humanAvgPct && entry.human_mean !== null && entry.llm_max !== null && entry.llm_max > 0){
+        var humanPct = entry.human_mean / entry.llm_max;
+        humanAvgPct.textContent = formatPercent(humanPct);
+      } else if (humanAvgPct){
+        humanAvgPct.textContent = '–';
+      }
+      
+      if (humanTotalCount){
+        var yearEntry = state.yearMap[entry.year];
+        if (yearEntry && yearEntry.totals_by_grade && yearEntry.totals_by_grade[entry.grade_id]){
+          humanTotalCount.textContent = yearEntry.totals_by_grade[entry.grade_id].toLocaleString();
+        } else {
+          humanTotalCount.textContent = '–';
+        }
+      }
+      
+      if (gapScoreDiff && entry.llm_total !== null && entry.human_mean !== null){
+        var scoreDiff = entry.llm_total - entry.human_mean;
+        gapScoreDiff.textContent = (scoreDiff >= 0 ? '+' : '') + formatScore(scoreDiff);
+        gapScoreDiff.className = 'stat-value ' + (scoreDiff >= 0 ? 'positive' : 'negative');
+        if (gapScoreNote){
+          if (scoreDiff >= 0){
+            gapScoreNote.textContent = 'LLM outperforms humans by ' + formatScore(Math.abs(scoreDiff)) + ' points';
+          } else {
+            gapScoreNote.textContent = 'Humans outperform LLM by ' + formatScore(Math.abs(scoreDiff)) + ' points';
+          }
+        }
+      } else if (gapScoreDiff){
+        gapScoreDiff.textContent = '–';
+        gapScoreDiff.className = 'stat-value';
+      }
+      
+      if (gapPctDiff && entry.llm_score_pct !== null && entry.human_mean !== null && entry.llm_max !== null && entry.llm_max > 0){
+        var humanPctVal = entry.human_mean / entry.llm_max;
+        var pctDiff = entry.llm_score_pct - humanPctVal;
+        gapPctDiff.textContent = (pctDiff >= 0 ? '+' : '') + formatPercent(pctDiff);
+        gapPctDiff.className = 'stat-value ' + (pctDiff >= 0 ? 'positive' : 'negative');
+        if (gapPctNote){
+          var pctPoints = pctDiff * 100;
+          if (pctDiff >= 0){
+            gapPctNote.textContent = 'LLM ahead by ' + Math.abs(pctPoints).toFixed(1) + ' percentage points';
+          } else {
+            gapPctNote.textContent = 'Humans ahead by ' + Math.abs(pctPoints).toFixed(1) + ' percentage points';
+          }
+        }
+      } else if (gapPctDiff){
+        gapPctDiff.textContent = '–';
+        gapPctDiff.className = 'stat-value';
       }
     }
 
@@ -1881,19 +2130,249 @@
       if (!runData || !runData.entries){
         return;
       }
-      runData.entries.forEach(function(entry){
+      var filteredEntries = runData.entries;
+      var tableView = state.selectedTableView || 'single';
+      
+      if (tableView === 'single' && state.selectedYear && state.selectedGrade){
+        filteredEntries = runData.entries.filter(function(entry){
+          return entry.year === state.selectedYear && entry.grade_id === state.selectedGrade;
+        });
+      } else if (tableView === 'all-years' && state.selectedGrade){
+        filteredEntries = runData.entries.filter(function(entry){
+          return entry.grade_id === state.selectedGrade;
+        });
+      } else if (tableView === 'all-grades' && state.selectedYear){
+        filteredEntries = runData.entries.filter(function(entry){
+          return entry.year === state.selectedYear;
+        });
+      }
+      
+      if (filteredEntries.length === 0){
+        filteredEntries = runData.entries;
+      }
+      
+      var filterSelect = $('#human-run-filter');
+      var filterValue = filterSelect ? filterSelect.value : 'all';
+      
+      if (filterValue !== 'all'){
+        filteredEntries = filteredEntries.filter(function(entry){
+          if (filterValue === 'excellent') return entry.human_percentile >= 0.95;
+          if (filterValue === 'good') return entry.human_percentile >= 0.75;
+          if (filterValue === 'average') return entry.human_percentile >= 0.50;
+          if (filterValue === 'below-avg') return entry.human_percentile < 0.50;
+          if (filterValue === 'llm-wins') return entry.llm_total > entry.human_mean;
+          if (filterValue === 'human-wins') return entry.llm_total < entry.human_mean;
+          return true;
+        });
+      }
+      
+      var sortSelect = $('#human-run-sort');
+      var sortValue = sortSelect ? sortSelect.value : 'year-grade';
+      
+      function numericGradeKey(entry){
+        if (Array.isArray(entry.members) && entry.members.length){
+          return Math.min.apply(null, entry.members);
+        }
+        var first = String(entry.grade_id || '').split(/[\/-]/)[0];
+        var n = parseInt(first, 10);
+        return isNaN(n) ? 0 : n;
+      }
+      
+      function comparator(a, b){
+        if (sortValue === 'year-grade'){
+          if (a.year !== b.year) return a.year - b.year;
+          return numericGradeKey(a) - numericGradeKey(b);
+        } else if (sortValue === 'grade-year'){
+          var gA = numericGradeKey(a);
+          var gB = numericGradeKey(b);
+          if (gA !== gB) return gA - gB;
+          return (a.year || 0) - (b.year || 0);
+        } else if (sortValue === 'percentile-desc'){
+          var pa = (a.human_percentile == null ? -Infinity : a.human_percentile);
+          var pb = (b.human_percentile == null ? -Infinity : b.human_percentile);
+          if (pb !== pa) return pb - pa;
+          // tie-breakers for stability
+          if (a.year !== b.year) return a.year - b.year;
+          return numericGradeKey(a) - numericGradeKey(b);
+        } else if (sortValue === 'percentile-asc'){
+          var pa2 = (a.human_percentile == null ? Infinity : a.human_percentile);
+          var pb2 = (b.human_percentile == null ? Infinity : b.human_percentile);
+          if (pa2 !== pb2) return pa2 - pb2;
+          if (a.year !== b.year) return a.year - b.year;
+          return numericGradeKey(a) - numericGradeKey(b);
+        } else if (sortValue === 'gap-desc'){
+          var gapA = (a.llm_total || 0) - (a.human_mean || 0);
+          var gapB = (b.llm_total || 0) - (b.human_mean || 0);
+          return gapB - gapA;
+        } else if (sortValue === 'gap-asc'){
+          var gapA = (a.llm_total || 0) - (a.human_mean || 0);
+          var gapB = (b.llm_total || 0) - (b.human_mean || 0);
+          return gapA - gapB;
+        } else if (sortValue === 'llm-score-desc'){
+          if ((b.llm_total || 0) !== (a.llm_total || 0)) return (b.llm_total || 0) - (a.llm_total || 0);
+          if (a.year !== b.year) return a.year - b.year;
+          return numericGradeKey(a) - numericGradeKey(b);
+        } else if (sortValue === 'human-score-desc'){
+          if ((b.human_mean || 0) !== (a.human_mean || 0)) return (b.human_mean || 0) - (a.human_mean || 0);
+          if (a.year !== b.year) return a.year - b.year;
+          return numericGradeKey(a) - numericGradeKey(b);
+        }
+        return 0;
+      }
+      filteredEntries = filteredEntries.slice().sort(comparator);
+      
+      var bandKey = function(entry){
+        if (sortValue === 'year-grade') return String(entry.year);
+        if (sortValue === 'grade-year'){
+          var key = (Array.isArray(entry.members) && entry.members.length)
+            ? Math.min.apply(null, entry.members)
+            : (function(){
+                var first = String(entry.grade_id || '').split(/[\/-]/)[0];
+                var n = parseInt(first, 10);
+                return isNaN(n) ? 0 : n;
+              })();
+          return 'g-' + key;
+        }
+        return '';
+      };
+
+      var currentBand = null;
+      var isOddBand = false;
+      filteredEntries.forEach(function(entry){
         var tr = document.createElement('tr');
+        var thisBand = bandKey(entry);
+        if (thisBand !== currentBand){
+          currentBand = thisBand;
+          isOddBand = !isOddBand;
+          tr.classList.add('band-start');
+        }
+        if (currentBand) tr.classList.add(isOddBand ? 'band-odd' : 'band-even');
+        var percentileClass = '';
+        if (entry.human_percentile !== null && entry.human_percentile !== undefined){
+          if (entry.human_percentile >= 0.95) percentileClass = 'excellent';
+          else if (entry.human_percentile >= 0.75) percentileClass = 'good';
+          else if (entry.human_percentile >= 0.50) percentileClass = 'average';
+          else percentileClass = 'below-average';
+        }
+        
+        var humanPct = '–';
+        if (entry.human_mean !== null && entry.llm_max !== null && entry.llm_max > 0){
+          humanPct = formatPercent(entry.human_mean / entry.llm_max);
+        }
+        
+        var gap = '–';
+        var gapClass = '';
+        if (entry.llm_total !== null && entry.human_mean !== null){
+          var scoreDiff = entry.llm_total - entry.human_mean;
+          gap = (scoreDiff >= 0 ? '+' : '') + formatScore(scoreDiff);
+          gapClass = scoreDiff >= 0 ? 'positive' : 'negative';
+        }
+        
         tr.innerHTML = [
           '<td>' + entry.year + '</td>',
           '<td>' + (entry.grade_label || entry.grade_id) + '</td>',
           '<td>' + formatScore(entry.llm_total) + '</td>',
-          '<td>' + formatScore(entry.llm_max) + '</td>',
           '<td>' + formatPercent(entry.llm_score_pct) + '</td>',
-          '<td>' + formatPercent(entry.human_percentile) + '</td>',
-          '<td>' + (entry.z_score !== null && entry.z_score !== undefined ? entry.z_score.toFixed(2) : '–') + '</td>'
+          '<td>' + (entry.human_mean !== null ? formatScore(entry.human_mean) : '–') + '</td>',
+          '<td>' + humanPct + '</td>',
+          '<td>' + (entry.human_std !== null ? formatScore(entry.human_std) : '–') + '</td>',
+          '<td class="' + percentileClass + '">' + formatPercent(entry.human_percentile) + '</td>',
+          '<td class="' + gapClass + '">' + gap + '</td>'
         ].join('');
         runTableBody.appendChild(tr);
       });
+      
+      updateRunTableStats(filteredEntries);
+    }
+    
+    function updateRunTableStats(entries){
+      var statsTotal = $('#stats-total');
+      var statsLlmWins = $('#stats-llm-wins');
+      var statsHumanWins = $('#stats-human-wins');
+      var statsAvgPercentile = $('#stats-avg-percentile');
+      var statsBestYear = $('#stats-best-year');
+      var statsBestGrade = $('#stats-best-grade');
+      
+      if (!entries || entries.length === 0){
+        if (statsTotal) statsTotal.textContent = '0';
+        if (statsLlmWins) statsLlmWins.textContent = '0';
+        if (statsHumanWins) statsHumanWins.textContent = '0';
+        if (statsAvgPercentile) statsAvgPercentile.textContent = '–';
+        if (statsBestYear) statsBestYear.textContent = '–';
+        if (statsBestGrade) statsBestGrade.textContent = '–';
+        return;
+      }
+      
+      var llmWins = 0;
+      var humanWins = 0;
+      var totalPercentile = 0;
+      var percentileCount = 0;
+      var yearScores = {};
+      var gradeScores = {};
+      
+      entries.forEach(function(entry){
+        if (entry.llm_total !== null && entry.human_mean !== null){
+          if (entry.llm_total > entry.human_mean) llmWins++;
+          else if (entry.llm_total < entry.human_mean) humanWins++;
+        }
+        
+        if (entry.human_percentile !== null && entry.human_percentile !== undefined){
+          totalPercentile += entry.human_percentile;
+          percentileCount++;
+        }
+        
+        if (entry.year && entry.human_percentile !== null){
+          if (!yearScores[entry.year]) yearScores[entry.year] = {sum: 0, count: 0};
+          yearScores[entry.year].sum += entry.human_percentile;
+          yearScores[entry.year].count++;
+        }
+        
+        if (entry.grade_id && entry.human_percentile !== null){
+          if (!gradeScores[entry.grade_id]) gradeScores[entry.grade_id] = {sum: 0, count: 0};
+          gradeScores[entry.grade_id].sum += entry.human_percentile;
+          gradeScores[entry.grade_id].count++;
+        }
+      });
+      
+      if (statsTotal) statsTotal.textContent = entries.length;
+      if (statsLlmWins) statsLlmWins.textContent = llmWins;
+      if (statsHumanWins) statsHumanWins.textContent = humanWins;
+      if (statsAvgPercentile && percentileCount > 0){
+        var avgPct = totalPercentile / percentileCount;
+        statsAvgPercentile.textContent = formatPercent(avgPct);
+      } else if (statsAvgPercentile){
+        statsAvgPercentile.textContent = '–';
+      }
+      
+      var bestYear = null;
+      var bestYearScore = -1;
+      Object.keys(yearScores).forEach(function(year){
+        var avg = yearScores[year].sum / yearScores[year].count;
+        if (avg > bestYearScore){
+          bestYearScore = avg;
+          bestYear = year;
+        }
+      });
+      if (statsBestYear && bestYear){
+        statsBestYear.textContent = bestYear + ' (' + formatPercent(bestYearScore) + ')';
+      } else if (statsBestYear){
+        statsBestYear.textContent = '–';
+      }
+      
+      var bestGrade = null;
+      var bestGradeScore = -1;
+      Object.keys(gradeScores).forEach(function(grade){
+        var avg = gradeScores[grade].sum / gradeScores[grade].count;
+        if (avg > bestGradeScore){
+          bestGradeScore = avg;
+          bestGrade = grade;
+        }
+      });
+      if (statsBestGrade && bestGrade){
+        statsBestGrade.textContent = bestGrade + ' (' + formatPercent(bestGradeScore) + ')';
+      } else if (statsBestGrade){
+        statsBestGrade.textContent = '–';
+      }
     }
 
     function buildHeatmapData(entries, label){
@@ -1968,7 +2447,13 @@
         return;
       }
       runView.hidden = false;
-      var comparison = state.runComparisons[state.selectedRun];
+      var cacheKey = state.selectedRun + '_' + state.aggregationStrategy;
+      var comparison = state.runComparisons[cacheKey];
+      if (!comparison && state.humanComparison && state.humanComparison.run_id === state.selectedRun){
+        comparison = state.humanComparison;
+        state.runComparisons[cacheKey] = comparison;
+      }
+      state.runData = comparison || null;
       if (!comparison || !comparison.entries || !comparison.entries.length){
         noteEl.textContent = 'No baseline data available for this run.';
         renderRunTable(null);
@@ -1996,9 +2481,37 @@
         state.selectedGrade = selectedEntry.grade_id;
       }
       noteEl.textContent = selectedEntry ? ('Run ' + state.selectedRun + ' · ' + (selectedEntry.grade_label || selectedEntry.grade_id)) : '';
+      // quick stats
+      updateQuickStats(comparison);
       renderRunTable(comparison);
       updateRunSummary(selectedEntry);
       updateRunCharts(comparison, selectedEntry);
+    }
+
+    function updateQuickStats(runData){
+      var elEntries = document.getElementById('quick-entries');
+      var elYears = document.getElementById('quick-years');
+      var elGrades = document.getElementById('quick-grades');
+      var elPoints = document.getElementById('quick-points-earned');
+      var elMax = document.getElementById('quick-max-points');
+      if (!runData || !runData.entries){
+        if (elEntries) elEntries.textContent = '–';
+        if (elYears) elYears.textContent = '–';
+        if (elGrades) elGrades.textContent = '–';
+        if (elPoints) elPoints.textContent = '–';
+        if (elMax) elMax.textContent = '–';
+        return;
+      }
+      var entries = runData.entries;
+      var years = Array.from(new Set(entries.map(function(e){ return e.year; }))).sort();
+      var grades = Array.from(new Set(entries.map(function(e){ return e.grade_label || e.grade_id; })));
+      var totalEarned = entries.reduce(function(acc, e){ return acc + (e.llm_points_awarded || 0); }, 0);
+      var totalMax = entries.reduce(function(acc, e){ return acc + (e.llm_max || 0); }, 0);
+      if (elEntries) elEntries.textContent = String(entries.length);
+      if (elYears) elYears.textContent = years[0] + '–' + years[years.length - 1];
+      if (elGrades) elGrades.textContent = grades.length + ' groups';
+      if (elPoints) elPoints.textContent = totalEarned.toFixed(1).replace(/\.0$/, '');
+      if (elMax) elMax.textContent = totalMax.toFixed(1).replace(/\.0$/, '');
     }
 
     function computeHeatmapValues(entry){
@@ -2079,6 +2592,65 @@
       });
     }
 
+    function updateCohortSummary(entry, runCount){
+      var runCountEl = $('#human-cohort-run-count');
+      var avgPercentileEl = $('#human-cohort-avg-percentile');
+      var medianPercentileEl = $('#human-cohort-median-percentile');
+      var bestRunEl = $('#human-cohort-best-run');
+      var rangeEl = $('#human-cohort-range');
+      var percentileNoteEl = $('#human-cohort-percentile-note');
+      var bestNoteEl = $('#human-cohort-best-note');
+      
+      if (runCountEl) runCountEl.textContent = runCount || '0';
+      
+      if (!entry){
+        if (avgPercentileEl) avgPercentileEl.textContent = '–';
+        if (medianPercentileEl) medianPercentileEl.textContent = '–';
+        if (bestRunEl) bestRunEl.textContent = '–';
+        if (rangeEl) rangeEl.textContent = '–';
+        if (percentileNoteEl) percentileNoteEl.textContent = '';
+        if (bestNoteEl) bestNoteEl.textContent = '';
+        return;
+      }
+      
+      if (avgPercentileEl && entry.avg_human_percentile !== null && entry.avg_human_percentile !== undefined){
+        avgPercentileEl.textContent = formatPercent(entry.avg_human_percentile);
+        if (percentileNoteEl){
+          var pct = entry.avg_human_percentile * 100;
+          if (pct >= 95) percentileNoteEl.textContent = 'Excellent performance';
+          else if (pct >= 75) percentileNoteEl.textContent = 'Good performance';
+          else if (pct >= 50) percentileNoteEl.textContent = 'Above average';
+          else percentileNoteEl.textContent = 'Below average';
+        }
+      } else if (avgPercentileEl){
+        avgPercentileEl.textContent = '–';
+      }
+      
+      if (medianPercentileEl && entry.median_percentile !== null && entry.median_percentile !== undefined){
+        medianPercentileEl.textContent = formatPercent(entry.median_percentile);
+      } else if (medianPercentileEl){
+        medianPercentileEl.textContent = '–';
+      }
+      
+      if (bestRunEl && entry.best_run_id){
+        var shortId = entry.best_run_id.length > 15 ? '...' + entry.best_run_id.slice(-12) : entry.best_run_id;
+        bestRunEl.textContent = shortId;
+        if (bestNoteEl){
+          var bestPct = entry.max_percentile !== null && entry.max_percentile !== undefined ? 
+            formatPercent(entry.max_percentile) : 'N/A';
+          bestNoteEl.textContent = 'Percentile: ' + bestPct;
+        }
+      } else if (bestRunEl){
+        bestRunEl.textContent = '–';
+      }
+      
+      if (rangeEl && entry.p25_percentile !== null && entry.p75_percentile !== null){
+        rangeEl.textContent = formatPercent(entry.p25_percentile) + ' - ' + formatPercent(entry.p75_percentile);
+      } else if (rangeEl){
+        rangeEl.textContent = '–';
+      }
+    }
+
     function renderCohortView(){
       ensureCohortDefaults();
       var runIds = state.selectedRuns.slice();
@@ -2120,6 +2692,7 @@
         }
         var selectedEntries = filteredEntries.filter(function(entry){ return entry.grade_id === state.selectedGrade; });
         noteEl.textContent = state.selectedGrade ? ('Cohort · ' + (selectedEntries[0] ? (selectedEntries[0].grade_label || selectedEntries[0].grade_id) : state.selectedGrade)) : '';
+        updateCohortSummary(selectedEntries[0], runIds.length);
         renderCohortTable(filteredEntries);
 
         Promise.all(runIds.map(fetchRunComparison)).then(function(){
@@ -2177,16 +2750,41 @@
         updateView();
       });
     }
-    if (runMulti){
-      runMulti.addEventListener('change', function(){
+    if (runSelectAllBtn){
+      runSelectAllBtn.addEventListener('click', function(){
+        if (!runChecklist) return;
+        var boxes = runChecklist.querySelectorAll('input[type="checkbox"]');
+        boxes.forEach(function(cb){ cb.checked = true; });
         state.selectedRuns = getSelectedRuns();
         renderCohortView();
+      });
+    }
+    if (runClearBtn){
+      runClearBtn.addEventListener('click', function(){
+        if (!runChecklist) return;
+        var boxes = runChecklist.querySelectorAll('input[type="checkbox"]');
+        boxes.forEach(function(cb){ cb.checked = false; });
+        state.selectedRuns = [];
+        renderCohortView();
+      });
+    }
+    if (groupingModeSelect){
+      groupingModeSelect.addEventListener('change', function(){
+        state.selectedGroupingMode = this.value;
+        updateGroupingMode();
+        if (state.selectedView === 'run'){
+          renderRunView();
+        } else {
+          renderCohortView();
+        }
       });
     }
     if (yearSelect){
       yearSelect.addEventListener('change', function(){
         state.selectedYear = parseInt(this.value, 10);
-        populateGradeSelect(state.selectedYear);
+        if (state.selectedGroupingMode === 'year'){
+          populateGradeSelect(state.selectedYear);
+        }
         if (state.selectedView === 'run'){
           renderRunView();
         } else {
@@ -2197,10 +2795,39 @@
     if (gradeSelect){
       gradeSelect.addEventListener('change', function(){
         state.selectedGrade = this.value;
+        if (state.selectedGroupingMode === 'grade'){
+          populateYearsForGrade(state.selectedGrade);
+        }
         if (state.selectedView === 'run'){
           renderRunView();
         } else {
           renderCohortView();
+        }
+      });
+    }
+    if (tableViewSelect){
+      tableViewSelect.addEventListener('change', function(){
+        state.selectedTableView = this.value;
+        if (state.selectedView === 'run'){
+          renderRunView();
+        }
+      });
+    }
+    
+    var runSortSelect = $('#human-run-sort');
+    if (runSortSelect){
+      runSortSelect.addEventListener('change', function(){
+        if (state.selectedView === 'run' && state.runData){
+          renderRunTable(state.runData);
+        }
+      });
+    }
+    
+    var runFilterSelect = $('#human-run-filter');
+    if (runFilterSelect){
+      runFilterSelect.addEventListener('change', function(){
+        if (state.selectedView === 'run' && state.runData){
+          renderRunTable(state.runData);
         }
       });
     }
@@ -2210,12 +2837,22 @@
         renderCohortView();
       });
     }
+    
+    var aggregationStrategySelect = $('#aggregation-strategy');
+    if (aggregationStrategySelect){
+      aggregationStrategySelect.addEventListener('change', function(){
+        state.aggregationStrategy = this.value;
+        if (state.selectedRun){
+          // Clear cache for this run and reload
+          var oldCacheKey = state.selectedRun + '_' + (state.aggregationStrategy === 'best' ? 'average' : 'best');
+          delete state.runComparisons[oldCacheKey];
+          updateView();
+        }
+      });
+    }
 
     populateRunSelectors();
-    populateYearSelect();
-    if (state.selectedYear){
-      populateGradeSelect(state.selectedYear);
-    }
+    updateGroupingMode();
     updateView();
   }
 

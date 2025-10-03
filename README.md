@@ -57,6 +57,10 @@ Dataset Filtering
 - `--points-range <MIN-MAX>`: Select a range of question point values.
 - `--vision-only`: Run only on multimodal (vision) questions.
 
+Scoring
+
+- LLM runs follow the official Känguru convention: grades 3–6 start with 24 points and grades 7–13 start with 30. Correct answers earn the full task value, unanswered questions score 0, and wrong or unparsed answers subtract one quarter of the task value (for example, -0.75, -1.0, -1.25). Totals and weighted accuracy include this start capital so model scores align with the published human ranges.
+
 Image Controls (to reduce input bloat)
 
 - The evaluator downsizes images before sending to the model. Flags:

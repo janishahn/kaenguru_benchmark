@@ -403,6 +403,9 @@ class HumanRunGradeComparison(BaseModel):
     llm_total: float
     llm_max: float
     llm_score_pct: Optional[float] = None
+    llm_start_points: Optional[float] = None
+    llm_points_awarded: Optional[float] = None
+    llm_points_available: Optional[float] = None
     human_percentile: Optional[float] = None
     z_score: Optional[float] = None
     human_mean: Optional[float] = None

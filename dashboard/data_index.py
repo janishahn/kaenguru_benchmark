@@ -3,13 +3,16 @@
 from __future__ import annotations
 
 from collections import Counter, defaultdict
+import math
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import DefaultDict, Dict, Iterator, List, Optional
+from typing import DefaultDict, Dict, Iterator, List, Optional, Set, Tuple
 
 import cachetools
 import pyarrow.parquet as pq
+
+from score_utils import coerce_points, start_points_for_group
 
 from . import aggregations, schemas
 from .utils import (
@@ -153,12 +156,13 @@ class RunIndex:
         )
 
         results_source = None
-        if files.results_json is not None:
-            results_source = "json"
+        # Prefer parquet (usually the complete results), then jsonl, then json
+        if files.results_parquet is not None:
+            results_source = "parquet"
         elif files.results_jsonl is not None:
             results_source = "jsonl"
-        elif files.results_parquet is not None:
-            results_source = "parquet"
+        elif files.results_json is not None:
+            results_source = "json"
 
         has_failures = files.failures is not None and files.failures.exists() and files.failures.stat().st_size > 0
         ts = parse_run_timestamp(run_id)
@@ -378,38 +382,103 @@ class RunIndex:
         )
 
     def _calculate_total_points_earned_direct(self, paths: RunFilePaths) -> float:
-        """Calculate the total points earned for a run by summing points_earned from all results."""
+        """Calculate the total points earned for a run, including start capital per grade."""
+
         total_points = 0.0
-        
+        start_points_total = 0.0
+        seen_grade_keys: Set[Tuple[str, str]] = set()
+
+        def normalize_year(value: object) -> str:
+            if value is None or isinstance(value, bool):
+                return "None"
+            if isinstance(value, int):
+                return str(value)
+            if isinstance(value, float):
+                if math.isnan(value):
+                    return "None"
+                if value.is_integer():
+                    return str(int(value))
+                return str(value)
+            text = str(value).strip()
+            return text or "None"
+
+        def normalize_group(value: object) -> Optional[Tuple[str, object]]:
+            if value is None or isinstance(value, bool):
+                return None
+            if isinstance(value, int):
+                return str(value), value
+            if isinstance(value, float):
+                if math.isnan(value):
+                    return None
+                if value.is_integer():
+                    integer_value = int(value)
+                    return str(integer_value), integer_value
+                return str(value), value
+            text = str(value).strip()
+            if not text:
+                return None
+            try:
+                numeric = float(text)
+            except ValueError:
+                return text, text
+            if math.isfinite(numeric) and numeric.is_integer():
+                integer_value = int(numeric)
+                return str(integer_value), integer_value
+            return text, text
+
+        def process_row(row: schemas.RunResultRow) -> None:
+            nonlocal total_points, start_points_total
+
+            if row.points_earned is not None:
+                try:
+                    total_points += float(row.points_earned)
+                except (TypeError, ValueError):
+                    pass
+
+            points_possible = coerce_points(row.points)
+            if points_possible <= 0.0:
+                return
+
+            normalized = normalize_group(row.group)
+            if normalized is None:
+                return
+            group_key, group_value = normalized
+            year_key = normalize_year(row.year)
+            key = (year_key, group_key)
+            if key in seen_grade_keys:
+                return
+            seen_grade_keys.add(key)
+            start_bonus = start_points_for_group(group_value)
+            if start_bonus > 0.0:
+                start_points_total += start_bonus
+
         # Determine which results file to use
         results_path = paths.results_jsonl or paths.results_json or paths.results_parquet
         if not results_path:
             return 0.0
-            
+
         try:
             if paths.results_jsonl:
                 for obj in load_jsonl(paths.results_jsonl):
                     row = self._row_from_obj(obj)
-                    if row.points_earned is not None:
-                        total_points += float(row.points_earned)
+                    process_row(row)
             elif paths.results_json:
                 data = load_json(paths.results_json)
                 for obj in data:
                     row = self._row_from_obj(obj)
-                    if row.points_earned is not None:
-                        total_points += float(row.points_earned)
+                    process_row(row)
             elif paths.results_parquet:
                 import pyarrow.parquet as pq
+
                 parquet_file = pq.ParquetFile(paths.results_parquet)
                 for batch in parquet_file.iter_batches():
                     for obj in batch.to_pylist():
                         row = self._row_from_obj(obj)
-                        if row.points_earned is not None:
-                            total_points += float(row.points_earned)
+                        process_row(row)
         except FileNotFoundError:
             # If results file is missing, return 0
             pass
-        return total_points
+        return total_points + start_points_total
 
     def get_run(self, run_id: str) -> RunRecord:
         record = self._runs.get(run_id)
@@ -429,6 +498,13 @@ class RunIndex:
     def iter_results(self, run_id: str) -> Iterator[schemas.RowRecord]:
         record = self.get_run(run_id)
         paths = record.paths
+        # Load based on preferred source set in _load_run_record
+        if record.paths.results_parquet:
+            parquet_file = pq.ParquetFile(record.paths.results_parquet)
+            for batch in parquet_file.iter_batches():
+                for obj in batch.to_pylist():
+                    yield self._row_from_obj(obj)
+            return
         if paths.results_jsonl:
             for obj in load_jsonl(paths.results_jsonl):
                 yield self._row_from_obj(obj)

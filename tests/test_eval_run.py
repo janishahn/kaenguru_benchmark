@@ -306,6 +306,35 @@ def test_no_live_dashboard_flag(monkeypatch, tmp_path):
     assert metrics["reasoning_tokens_known_count"] == 0
 
 
+def test_unparsed_response_penalized(monkeypatch, tmp_path):
+    dataset = write_parquet(tmp_path, [make_row(3, with_images=False)])
+
+    payload = {
+        "id": "gen_blank",
+        "model": "openai/gpt-5",
+        "choices": [{"message": {"content": ""}}],
+        "usage": {"prompt_tokens": 9, "completion_tokens": 1, "total_tokens": 10},
+    }
+
+    run_dir = run_eval(
+        monkeypatch,
+        tmp_path,
+        dataset,
+        model_id="openai/gpt-5",
+        responses=[FakeResp(200, payload)],
+    )
+
+    import pandas as pd
+
+    df = pd.read_parquet(run_dir / "results.parquet", engine="pyarrow")
+    row = df.iloc[0]
+    assert bool(row["is_correct"]) is False
+    assert row["points_earned"] == pytest.approx(-1.25)
+
+    metrics = json.loads((run_dir / "metrics.json").read_text())
+    assert metrics["total_points_earned"] == pytest.approx(-1.25)
+
+
 def test_cot_with_reason(monkeypatch, tmp_path):
     dataset = write_parquet(tmp_path, [make_row(2)])
     payload = {

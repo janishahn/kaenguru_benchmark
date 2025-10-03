@@ -8,6 +8,8 @@ from collections import defaultdict
 from dataclasses import dataclass
 from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 
+from score_utils import start_points_for_members
+
 from . import schemas
 from .data_index import RunIndex, RunNotFoundError
 from .human_baseline import HumanBaselineIndex, HumanGradeStats, HumanYear
@@ -24,6 +26,8 @@ def compute_run_human_comparison(
     run_id: str,
     index: RunIndex,
     humans: HumanBaselineIndex,
+    *,
+    late_year_strategy: str = "best",  # "best" or "average"
 ) -> schemas.HumanRunComparisonResponse:
     notes: List[str] = []
     try:
@@ -50,10 +54,19 @@ def compute_run_human_comparison(
 
         grade_id = _resolve_grade_id(human_year, row.group)
         if grade_id is None:
-            notes.append(
-                f"Row {row.id} skipped: group '{row.group}' not mapped to human grade for {year}"
-            )
-            continue
+            # Try range-based aggregation for 2007+ years
+            if year >= 2007 and _is_range_group(row.group):
+                grade_id = _resolve_range_group(human_year, row.group, late_year_strategy)
+                if grade_id is None:
+                    notes.append(
+                        f"Row {row.id} skipped: group '{row.group}' not mapped to human grade for {year}"
+                    )
+                    continue
+            else:
+                notes.append(
+                    f"Row {row.id} skipped: group '{row.group}' not mapped to human grade for {year}"
+                )
+                continue
 
         points = _safe_float(row.points)
         if points is None or points <= 0:
@@ -79,17 +92,29 @@ def compute_run_human_comparison(
         human_year = human_year_cache.get(year)
         if not human_year:
             continue
-        grade_stats = human_year.grade(grade_id)
-        llm_total = acc.total
-        llm_max = acc.maximum
+        # Handle synthetic grade IDs that represent aggregated groups
+        if grade_id.startswith("_range_aggregated_"):
+            grade_stats = _get_aggregated_grade_stats(human_year, grade_id, late_year_strategy)
+            if grade_stats is None:
+                notes.append("Failed to aggregate grade stats for range group")
+                continue
+        else:
+            grade_stats = human_year.grade(grade_id)
+        start_bonus = start_points_for_members(grade_stats.members)
+        llm_points_awarded = acc.total
+        llm_points_available = acc.maximum
+        llm_total = llm_points_awarded + start_bonus
+        observed_max = llm_points_available + start_bonus
+        baseline_max = grade_stats.max_points
+        llm_max = baseline_max if baseline_max > 0 else observed_max
         llm_score_pct = llm_total / llm_max if llm_max > 0 else None
         human_percentile = grade_stats.percentile(llm_total)
         z_score = grade_stats.z_score(llm_total)
 
-        if abs(llm_max - grade_stats.max_points) > 1e-6:
+        if baseline_max > 0 and abs(observed_max - baseline_max) > 1e-6:
             notes.append(
-                f"Run {run_id} year {year} grade {grade_id}: max points {llm_max:.2f} "
-                f"differs from human baseline {grade_stats.max_points:.2f}"
+                f"Run {run_id} year {year} grade {grade_id}: dataset-derived max {observed_max:.2f} "
+                f"differs from human baseline {baseline_max:.2f}"
             )
 
         bin_comparison = _build_bin_comparison(human_year, grade_stats, llm_total)
@@ -104,6 +129,9 @@ def compute_run_human_comparison(
                 llm_total=llm_total,
                 llm_max=llm_max,
                 llm_score_pct=llm_score_pct,
+                llm_start_points=start_bonus,
+                llm_points_awarded=llm_points_awarded,
+                llm_points_available=llm_points_available,
                 human_percentile=human_percentile,
                 z_score=z_score,
                 human_mean=grade_stats.mean_estimate,
@@ -447,4 +475,130 @@ def _resolve_grade_id(
         grade = human_year.grade(grade_id)
         if value_int in grade.members:
             return grade_id
+    return None
+
+
+def _is_range_group(group_value: Optional[str]) -> bool:
+    """Check if group represents a range like '11-13' or '11/13'."""
+    if not group_value:
+        return False
+    group_str = str(group_value).strip().replace("/", "-").replace("\u2013", "-")
+    try:
+        parts = group_str.split("-")
+        if len(parts) == 2:
+            int(parts[0])
+            int(parts[1])
+            return True
+    except (ValueError, IndexError):
+        pass
+    return False
+
+
+def _resolve_range_group(
+    human_year: HumanYear,
+    group_value: str,
+    strategy: str,
+) -> Optional[str]:
+    """Resolve a range group like '11-13' by aggregating constituent grades."""
+    group_str = str(group_value).strip().replace("/", "-")
+    parts = group_str.split("-")
+    if len(parts) != 2:
+        return None
+    
+    try:
+        start_grade = int(parts[0])
+        end_grade = int(parts[1])
+    except ValueError:
+        return None
+    
+    # Find individual grades in this range
+    constituent_grades = []
+    for grade_id in human_year.grade_ids():
+        grade = human_year.grade(grade_id)
+        if len(grade.members) == 1 and start_grade <= grade.members[0] <= end_grade:
+            constituent_grades.append(grade_id)
+    
+    if not constituent_grades:
+        return None
+    
+    # Create synthetic grade ID for this aggregation
+    synthetic_id = f"_range_aggregated_{group_str}_{strategy}"
+    return synthetic_id
+
+
+def _get_aggregated_grade_stats(
+    human_year: HumanYear,
+    synthetic_grade_id: str,
+    strategy: str,
+) -> Optional[HumanGradeStats]:
+    """Get aggregated grade stats for a synthetic range-based grade ID."""
+    # Parse the synthetic ID to extract the range
+    parts = synthetic_grade_id.split("_")
+    if len(parts) < 5:
+        return None
+    
+    range_str = parts[3]  # Extract the range part (e.g., "3-4" from "_range_aggregated_3-4_best")
+    parts2 = range_str.split("-")
+    if len(parts2) != 2:
+        return None
+    
+    try:
+        start_grade = int(parts2[0])
+        end_grade = int(parts2[1])
+    except ValueError:
+        return None
+    
+    # Find constituent grades
+    constituent_grades = []
+    for grade_id in human_year.grade_ids():
+        grade = human_year.grade(grade_id)
+        if len(grade.members) == 1 and start_grade <= grade.members[0] <= end_grade:
+            constituent_grades.append(grade_id)
+    
+    if not constituent_grades:
+        return None
+    
+    # Aggregate the grades based on strategy
+    if strategy == "best":
+        # Use grade with best human performance (highest mean)
+        best_grade_id = None
+        best_mean = -1
+        
+        for grade_id in constituent_grades:
+            grade = human_year.grade(grade_id)
+            if grade.mean_estimate and grade.mean_estimate > best_mean:
+                best_mean = grade.mean_estimate
+                best_grade_id = grade_id
+        
+        if best_grade_id:
+            base_grade = human_year.grade(best_grade_id)
+            # Modify label to reflect aggregation
+            aggregated_members = tuple(sorted(range(start_grade, end_grade + 1)))
+            return HumanGradeStats(
+                id=synthetic_grade_id,
+                label=f"{range_str} (best: {base_grade.label})",
+                members=aggregated_members,
+                max_points=base_grade.max_points,
+                counts=base_grade.counts.copy(),
+                total_count=base_grade.total_count,
+                avg_score_reported=base_grade.avg_score_reported,
+                bin_ranges=base_grade.bin_ranges.copy(),
+                probabilities=base_grade.probabilities.copy(),
+                cdf_points=base_grade.cdf_points.copy(),
+                mean_estimate=base_grade.mean_estimate,
+                stddev_estimate=base_grade.stddev_estimate,
+            )
+    
+    elif strategy == "average":
+        # Aggregate all constituent grades
+        aggregated_grade = human_year.aggregate_grades(
+            constituent_grades,
+            synthetic_grade_id,
+            f"{range_str} (avg)",
+        )
+        if aggregated_grade:
+            aggregated_grade.id = synthetic_grade_id
+            aggregated_grade.label = f"{range_str} (avg of {len(constituent_grades)})"
+            return aggregated_grade
+    
     return None

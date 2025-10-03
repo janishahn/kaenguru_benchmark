@@ -10,6 +10,7 @@ from fastapi.testclient import TestClient
 
 from dashboard.human_baseline import HumanBaselineIndex
 from dashboard.server import create_app
+from score_utils import start_points_for_group
 
 
 FIXTURE_DIR = Path(__file__).resolve().parent / "fixtures" / "human_baseline"
@@ -52,13 +53,32 @@ def _write_mock_run(path: Path, results: list[dict]) -> None:
         total_earned += base["points_earned"]
         if base.get("is_correct"):
             correct += 1
+
+    start_points_total = 0.0
+    seen_grade_keys: set[tuple[object, object]] = set()
+    for entry in normalized_results:
+        key = (entry.get("year"), entry.get("group"))
+        if key in seen_grade_keys:
+            continue
+        seen_grade_keys.add(key)
+        bonus = start_points_for_group(entry.get("group"))
+        if bonus > 0.0:
+            start_points_total += bonus
+
+    total_points_with_start = total_points + start_points_total
+    total_earned_with_start = total_earned + start_points_total
+
     metrics = {
         "answered_count": len(results),
         "skipped_count": 0,
         "failed_count": 0,
         "accuracy": (correct / len(results)) if results else 0.0,
-        "points_weighted_accuracy": (total_earned / total_points) if total_points else 0.0,
-        "total_points_earned": total_earned,
+        "points_weighted_accuracy": (
+            (total_earned_with_start / total_points_with_start)
+            if total_points_with_start
+            else 0.0
+        ),
+        "total_points_earned": total_earned_with_start,
         "breakdown_by_group": {},
         "breakdown_by_year": {},
     }
@@ -149,23 +169,23 @@ def test_human_endpoints(tmp_path):
     _write_mock_run(
         runs_dir / run1,
         results=[
-            {"id": "g3-1", "year": "2008", "group": "3", "points": 40.0, "points_earned": 35.0, "is_correct": True},
-            {"id": "g3-2", "year": "2008", "group": "3", "points": 40.0, "points_earned": 40.0, "is_correct": True},
-            {"id": "g3-3", "year": "2008", "group": "3", "points": 40.0, "points_earned": 30.0, "is_correct": False},
-            {"id": "g4-1", "year": "2008", "group": "4", "points": 40.0, "points_earned": 30.0, "is_correct": False},
-            {"id": "g4-2", "year": "2008", "group": "4", "points": 40.0, "points_earned": 25.0, "is_correct": False},
-            {"id": "g4-3", "year": "2008", "group": "4", "points": 40.0, "points_earned": 20.0, "is_correct": False}
+            {"id": "g3-1", "year": "2008", "group": "3", "points": 3.0, "points_earned": 3.0, "is_correct": True},
+            {"id": "g3-2", "year": "2008", "group": "3", "points": 4.0, "points_earned": 4.0, "is_correct": True},
+            {"id": "g3-3", "year": "2008", "group": "3", "points": 5.0, "points_earned": -1.25, "is_correct": False},
+            {"id": "g4-1", "year": "2008", "group": "4", "points": 3.0, "points_earned": -0.75, "is_correct": False},
+            {"id": "g4-2", "year": "2008", "group": "4", "points": 4.0, "points_earned": -1.0, "is_correct": False},
+            {"id": "g4-3", "year": "2008", "group": "4", "points": 5.0, "points_earned": -1.25, "is_correct": False}
         ],
     )
     _write_mock_run(
         runs_dir / run2,
         results=[
-            {"id": "g3-1", "year": "2008", "group": "3", "points": 40.0, "points_earned": 28.0, "is_correct": False},
-            {"id": "g3-2", "year": "2008", "group": "3", "points": 40.0, "points_earned": 32.0, "is_correct": False},
-            {"id": "g3-3", "year": "2008", "group": "3", "points": 40.0, "points_earned": 30.0, "is_correct": False},
-            {"id": "g4-1", "year": "2008", "group": "4", "points": 40.0, "points_earned": 38.0, "is_correct": True},
-            {"id": "g4-2", "year": "2008", "group": "4", "points": 40.0, "points_earned": 35.0, "is_correct": True},
-            {"id": "g4-3", "year": "2008", "group": "4", "points": 40.0, "points_earned": 30.0, "is_correct": False}
+            {"id": "g3-1", "year": "2008", "group": "3", "points": 3.0, "points_earned": -0.75, "is_correct": False},
+            {"id": "g3-2", "year": "2008", "group": "3", "points": 4.0, "points_earned": -1.0, "is_correct": False},
+            {"id": "g3-3", "year": "2008", "group": "3", "points": 5.0, "points_earned": -1.25, "is_correct": False},
+            {"id": "g4-1", "year": "2008", "group": "4", "points": 3.0, "points_earned": 3.0, "is_correct": True},
+            {"id": "g4-2", "year": "2008", "group": "4", "points": 4.0, "points_earned": 4.0, "is_correct": True},
+            {"id": "g4-3", "year": "2008", "group": "4", "points": 5.0, "points_earned": -1.25, "is_correct": False}
         ],
     )
 
@@ -197,7 +217,10 @@ def test_human_endpoints(tmp_path):
     run_compare = client.get(f"/api/humans/compare/run/{run1}").json()
     assert run_compare["entries"]
     grade3_entry = next(item for item in run_compare["entries"] if item["grade_id"] == "3")
-    assert pytest.approx(grade3_entry["llm_total"], rel=1e-6) == 105.0
+    assert pytest.approx(grade3_entry["llm_total"], rel=1e-6) == 29.75
+    assert pytest.approx(grade3_entry["llm_start_points"], rel=1e-6) == 24.0
+    assert pytest.approx(grade3_entry["llm_points_awarded"], rel=1e-6) == 5.75
+    assert pytest.approx(grade3_entry["llm_points_available"], rel=1e-6) == 12.0
     assert grade3_entry["bin_comparison"][2]["llm_share"] == 1.0
 
     cohort = client.post(

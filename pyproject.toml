@@ -19,6 +19,7 @@ dependencies = [
     "humanize>=4.9",
     "cachetools>=5.3",
     "rich>=13.7",
+    "pyqt5>=5.15.11",
 ]
 
 [tool.pytest.ini_options]

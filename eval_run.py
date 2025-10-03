@@ -21,6 +21,7 @@ from PIL import Image
 from tqdm import tqdm
 
 from console.metrics import Aggregator, UsageEvent
+from score_utils import score_question, start_points_for_group
 
 try:
     from console.dashboard import Dashboard
@@ -739,6 +740,13 @@ def build_failure_record(
     if not gt or gt not in LETTER_SET:
         gt = None
 
+    points_earned, scored_correct = score_question(
+        row.get("points"),
+        gt,
+        None,
+        penalize_unanswered=True,
+    )
+
     return RowRecord(
         id=row.get("id"),
         year=row.get("year"),
@@ -749,8 +757,8 @@ def build_failure_record(
         points=row.get("points"),
         answer=gt,
         predicted=None,
-        is_correct=None,
-        points_earned=0.0,
+        is_correct=scored_correct,
+        points_earned=points_earned,
         reasoning_mode=args.reasoning,
         latency_ms=sum(latencies) if latencies else None,
         prompt_tokens=None,
@@ -1128,18 +1136,17 @@ async def evaluate_single_row(
     if not gt or gt not in LETTER_SET:
         gt = None
 
-    is_correct = (ans == gt) if (ans is not None and gt is not None) else None
-
-    points_earned = 0.0
-    if is_correct:
-        raw_points = row.get("points")
-        if pd.isna(raw_points) or raw_points is None or raw_points == "":
-            points_earned = 0.0
-        else:
-            try:
-                points_earned = float(raw_points)
-            except (TypeError, ValueError):
-                points_earned = 0.0
+    if gt is None:
+        is_correct = None
+        points_earned = 0.0
+    else:
+        points_earned, scored_correct = score_question(
+            row.get("points"),
+            gt,
+            ans,
+            penalize_unanswered=True,
+        )
+        is_correct = scored_correct
 
     prompt_tokens = completion_tokens = total_tokens = None
     reasoning_tokens = cached_prompt_tokens = audio_prompt_tokens = None
@@ -1729,11 +1736,44 @@ def main():
     else:
         accuracy = 0.0
 
-    if len(results_df.columns) > 0 and not answered_mask.empty:
-        answered_points = results_df.loc[answered_mask, "points"].astype(float)
-        earned_points = results_df.loc[answered_mask, "points_earned"].astype(float)
-        p_weighted_accuracy = float(earned_points.sum() / answered_points.sum()) if answered_points.sum() > 0 else 0.0
-        total_points_earned = float(earned_points.sum())
+    if not results_df.empty:
+        points_series = pd.to_numeric(results_df.get("points"), errors="coerce").fillna(0.0)
+        earned_series = pd.to_numeric(results_df.get("points_earned"), errors="coerce").fillna(0.0)
+
+        start_points_total = 0.0
+        if not points_series.empty:
+            combos = results_df.loc[points_series > 0, ["year", "group"]]
+            seen_keys: Set[Tuple[str, str]] = set()
+            for year_value, group_value in combos.itertuples(index=False):
+                if pd.isna(group_value):
+                    continue
+
+                if isinstance(group_value, (int, float)) and not isinstance(group_value, bool):
+                    if float(group_value).is_integer():
+                        sanitized_group_value: object = int(float(group_value))
+                    else:
+                        sanitized_group_value = float(group_value)
+                else:
+                    sanitized_group_value = str(group_value).strip()
+
+                group_key = str(sanitized_group_value).strip()
+                if not group_key:
+                    continue
+                normalized_year = "None" if pd.isna(year_value) else str(year_value).strip()
+                key = (normalized_year, group_key)
+                if key in seen_keys:
+                    continue
+                seen_keys.add(key)
+                start_bonus = start_points_for_group(sanitized_group_value)
+                if start_bonus > 0.0:
+                    start_points_total += start_bonus
+
+        raw_total_points = float(earned_series.sum())
+        max_points_total = float(points_series.sum() + start_points_total)
+        total_points_earned = raw_total_points + start_points_total
+        p_weighted_accuracy = (
+            total_points_earned / max_points_total if max_points_total > 1e-12 else 0.0
+        )
     else:
         p_weighted_accuracy = 0.0
         total_points_earned = 0.0

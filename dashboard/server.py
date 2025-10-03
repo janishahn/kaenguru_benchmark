@@ -338,9 +338,12 @@ def create_app(
         "/api/humans/compare/run/{run_id}",
         response_model=schemas.HumanRunComparisonResponse,
     )
-    async def api_human_compare_run(run_id: str) -> schemas.HumanRunComparisonResponse:
+    async def api_human_compare_run(
+        run_id: str, 
+        late_year_strategy: str = "best"
+    ) -> schemas.HumanRunComparisonResponse:
         try:
-            return compute_run_human_comparison(run_id, index, humans)
+            return compute_run_human_comparison(run_id, index, humans, late_year_strategy=late_year_strategy)
         except RunNotFoundError as exc:
             raise HTTPException(status_code=404, detail=str(exc))
 

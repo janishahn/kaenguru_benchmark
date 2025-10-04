@@ -255,20 +255,20 @@
         <table id="human-run-table" class="comparison-table">
           <thead>
             <tr>
-              <th rowspan="2" class="col-year">Year</th>
-            <th rowspan="2" class="col-grade">Grade</th>
+              <th rowspan="2" class="col-year sortable" data-sort-key="year" tabindex="0" aria-sort="none">Year</th>
+            <th rowspan="2" class="col-grade sortable" data-sort-key="grade" tabindex="0" aria-sort="none">Grade</th>
             <th colspan="2" class="group-llm">LLM Performance</th>
             <th colspan="3" class="group-human">Human Performance</th>
             <th colspan="2" class="group-comparison">Comparison</th>
           </tr>
           <tr>
-            <th class="col-score">Score</th>
-            <th class="col-pct">Score %</th>
-            <th class="col-avg" id="human-score-col-header">Avg (μ)</th>
-            <th class="col-pct" id="human-score-pct-col-header">Avg %</th>
-            <th class="col-std">Std (σ)</th>
-            <th class="col-percentile">Percentile</th>
-            <th class="col-gap">Point Gap</th>
+            <th class="col-score sortable" data-sort-key="llm_score" tabindex="0" aria-sort="none">Score</th>
+            <th class="col-pct sortable" data-sort-key="llm_pct" tabindex="0" aria-sort="none">Score %</th>
+            <th class="col-avg sortable" data-sort-key="human_score" tabindex="0" aria-sort="none" id="human-score-col-header">Avg (μ)</th>
+            <th class="col-pct sortable" data-sort-key="human_pct" tabindex="0" aria-sort="none" id="human-score-pct-col-header">Avg %</th>
+            <th class="col-std sortable" data-sort-key="human_std" tabindex="0" aria-sort="none">Std (σ)</th>
+            <th class="col-percentile sortable" data-sort-key="percentile" tabindex="0" aria-sort="none">Percentile</th>
+            <th class="col-gap sortable" data-sort-key="gap" tabindex="0" aria-sort="none">Point Gap</th>
           </tr>
           </thead>
           <tbody id="human-run-table-body"></tbody>

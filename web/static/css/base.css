@@ -1305,6 +1305,33 @@ a:hover {
   border-bottom: 2px solid var(--border);
 }
 
+#human-run-table thead th.sortable {
+  cursor: pointer;
+  user-select: none;
+}
+
+#human-run-table thead th.sortable:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+#human-run-table thead th.sortable::after {
+  content: '';
+  margin-left: 0.25rem;
+  font-size: 0.75rem;
+  opacity: 0.4;
+}
+
+#human-run-table thead th.sortable[aria-sort="ascending"]::after {
+  content: ' ^';
+  opacity: 0.8;
+}
+
+#human-run-table thead th.sortable[aria-sort="descending"]::after {
+  content: ' v';
+  opacity: 0.8;
+}
+
 section h3 {
   margin: 2rem 0 1rem 0;
   font-size: 1.25rem;

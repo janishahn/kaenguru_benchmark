@@ -1658,6 +1658,7 @@
       baselineSummaries: {},
       currentRunSummary: null,
       currentRunSummaryKey: null,
+      runTableSortOverride: null,
     };
 
     state.years.forEach(function(entry){
@@ -1720,6 +1721,27 @@
     function labelForRun(run){
       if (!run) return '';
       return (run.model_label || run.model_id || run.run_id);
+    }
+
+    var runTable = document.getElementById('human-run-table');
+    var runTableHeaders = runTable ? $$('#human-run-table thead th[data-sort-key]') : [];
+
+    function updateRunTableSortIndicators(){
+      if (!runTableHeaders || !runTableHeaders.length) return;
+      runTableHeaders.forEach(function(th){
+        if (!th) return;
+        var sortKey = th.dataset.sortKey;
+        if (!sortKey) return;
+        var isActive = state.runTableSortOverride && state.runTableSortOverride.column === sortKey;
+        if (isActive){
+          var direction = state.runTableSortOverride.direction === 'desc' ? 'descending' : 'ascending';
+          th.setAttribute('aria-sort', direction);
+          th.classList.add('is-sorted');
+        } else {
+          th.setAttribute('aria-sort', 'none');
+          th.classList.remove('is-sorted');
+        }
+      });
     }
 
     function setSelectedOption(select, value){
@@ -2610,6 +2632,7 @@
       if (!runTableBody) return;
       runTableBody.innerHTML = '';
       if (!runData || !runData.entries){
+        updateRunTableSortIndicators();
         return;
       }
 
@@ -2663,6 +2686,8 @@
       
       var sortSelect = $('#human-run-sort');
       var sortValue = sortSelect ? sortSelect.value : 'year-grade';
+      var gradeNumberForMetrics = tableView === 'all-grades' ? null : selectedGradeNumber;
+      var sortOverride = state.runTableSortOverride;
       
       function numericGradeKey(entry){
         if (Array.isArray(entry.members) && entry.members.length){
@@ -2673,56 +2698,133 @@
         return isNaN(n) ? 0 : n;
       }
       
-      function comparator(a, b){
-        var gradeNumberForMetrics = tableView === 'all-grades' ? null : selectedGradeNumber;
-        var metricsA = deriveGradeMetrics(a, gradeNumberForMetrics);
-        var metricsB = deriveGradeMetrics(b, gradeNumberForMetrics);
-        var humanScoreA = state.selectedComparisonSource === 'best' ? metricsA.humanBest : metricsA.humanMean;
-        var humanScoreB = state.selectedComparisonSource === 'best' ? metricsB.humanBest : metricsB.humanMean;
-
-        if (sortValue === 'year-grade'){
-          if (a.year !== b.year) return a.year - b.year;
-          return numericGradeKey(a) - numericGradeKey(b);
-        } else if (sortValue === 'grade-year'){
-          var gA = numericGradeKey(a);
-          var gB = numericGradeKey(b);
-          if (gA !== gB) return gA - gB;
-          return (a.year || 0) - (b.year || 0);
-        } else if (sortValue === 'percentile-desc'){
-          var pa = (metricsA.humanPercentile == null ? -Infinity : metricsA.humanPercentile);
-          var pb = (metricsB.humanPercentile == null ? -Infinity : metricsB.humanPercentile);
-          if (pb !== pa) return pb - pa;
-          // tie-breakers for stability
-          if (a.year !== b.year) return a.year - b.year;
-          return numericGradeKey(a) - numericGradeKey(b);
-        } else if (sortValue === 'percentile-asc'){
-          var pa2 = (metricsA.humanPercentile == null ? Infinity : metricsA.humanPercentile);
-          var pb2 = (metricsB.humanPercentile == null ? Infinity : metricsB.humanPercentile);
-          if (pa2 !== pb2) return pa2 - pb2;
-          if (a.year !== b.year) return a.year - b.year;
-          return numericGradeKey(a) - numericGradeKey(b);
-        } else if (sortValue === 'gap-desc'){
-          var gapA = (a.llm_total || 0) - (humanScoreA || 0);
-          var gapB = (b.llm_total || 0) - (humanScoreB || 0);
-          return gapB - gapA;
-        } else if (sortValue === 'gap-asc'){
-          var gapA = (a.llm_total || 0) - (humanScoreA || 0);
-          var gapB = (b.llm_total || 0) - (humanScoreB || 0);
-          return gapA - gapB;
-        } else if (sortValue === 'llm-score-desc'){
-          if ((b.llm_total || 0) !== (a.llm_total || 0)) return (b.llm_total || 0) - (a.llm_total || 0);
-          if (a.year !== b.year) return a.year - b.year;
-          return numericGradeKey(a) - numericGradeKey(b);
-        } else if (sortValue === 'human-score-desc'){
-          if ((humanScoreB || 0) !== (humanScoreA || 0)) return (humanScoreB || 0) - (humanScoreA || 0);
-          if (a.year !== b.year) return a.year - b.year;
-          return numericGradeKey(a) - numericGradeKey(b);
+      function compareValues(aVal, bVal, direction){
+        var aNull = (aVal === null || aVal === undefined || (typeof aVal === 'number' && isNaN(aVal)));
+        var bNull = (bVal === null || bVal === undefined || (typeof bVal === 'number' && isNaN(bVal)));
+        if (aNull && bNull) return 0;
+        if (aNull) return direction > 0 ? 1 : -1;
+        if (bNull) return direction > 0 ? -1 : 1;
+        if (typeof aVal === 'string' || typeof bVal === 'string'){
+          var result = String(aVal).localeCompare(String(bVal), undefined, { sensitivity: 'base' });
+          if (result < 0) return -1 * direction;
+          if (result > 0) return 1 * direction;
+          return 0;
         }
+        var numA = Number(aVal);
+        var numB = Number(bVal);
+        if (numA < numB) return -1 * direction;
+        if (numA > numB) return 1 * direction;
         return 0;
       }
+
+      function fallbackCompare(a, b){
+        if (a.year !== b.year) return a.year - b.year;
+        return numericGradeKey(a) - numericGradeKey(b);
+      }
+
+      function maxPointsFor(entry, metrics){
+        if (metrics.maxPoints !== null && metrics.maxPoints !== undefined) return metrics.maxPoints;
+        if (entry.llm_max !== null && entry.llm_max !== undefined) return entry.llm_max;
+        return null;
+      }
+
+      var comparator;
+      if (sortOverride && sortOverride.column){
+        var sortDirection = sortOverride.direction === 'desc' ? -1 : 1;
+        comparator = function(a, b){
+          var metricsA = deriveGradeMetrics(a, gradeNumberForMetrics);
+          var metricsB = deriveGradeMetrics(b, gradeNumberForMetrics);
+          var humanScoreA = state.selectedComparisonSource === 'best' ? metricsA.humanBest : metricsA.humanMean;
+          var humanScoreB = state.selectedComparisonSource === 'best' ? metricsB.humanBest : metricsB.humanMean;
+          var valueA = null;
+          var valueB = null;
+          if (sortOverride.column === 'year'){
+            valueA = a.year;
+            valueB = b.year;
+          } else if (sortOverride.column === 'grade'){
+            valueA = numericGradeKey(a);
+            valueB = numericGradeKey(b);
+          } else if (sortOverride.column === 'llm_score'){
+            valueA = a.llm_total;
+            valueB = b.llm_total;
+          } else if (sortOverride.column === 'llm_pct'){
+            valueA = a.llm_score_pct;
+            valueB = b.llm_score_pct;
+          } else if (sortOverride.column === 'human_score'){
+            valueA = humanScoreA;
+            valueB = humanScoreB;
+          } else if (sortOverride.column === 'human_pct'){
+            var maxA = maxPointsFor(a, metricsA);
+            var maxB = maxPointsFor(b, metricsB);
+            valueA = (humanScoreA !== null && maxA) ? humanScoreA / maxA : null;
+            valueB = (humanScoreB !== null && maxB) ? humanScoreB / maxB : null;
+          } else if (sortOverride.column === 'human_std'){
+            valueA = metricsA.humanStd;
+            valueB = metricsB.humanStd;
+          } else if (sortOverride.column === 'percentile'){
+            valueA = metricsA.humanPercentile;
+            valueB = metricsB.humanPercentile;
+          } else if (sortOverride.column === 'gap'){
+            valueA = (a.llm_total !== null && humanScoreA !== null) ? (a.llm_total - humanScoreA) : null;
+            valueB = (b.llm_total !== null && humanScoreB !== null) ? (b.llm_total - humanScoreB) : null;
+          }
+          var result = compareValues(valueA, valueB, sortDirection);
+          if (result !== 0) return result;
+          return fallbackCompare(a, b);
+        };
+      } else {
+        comparator = function(a, b){
+          var metricsA = deriveGradeMetrics(a, gradeNumberForMetrics);
+          var metricsB = deriveGradeMetrics(b, gradeNumberForMetrics);
+          var humanScoreA = state.selectedComparisonSource === 'best' ? metricsA.humanBest : metricsA.humanMean;
+          var humanScoreB = state.selectedComparisonSource === 'best' ? metricsB.humanBest : metricsB.humanMean;
+
+          if (sortValue === 'year-grade'){
+            if (a.year !== b.year) return a.year - b.year;
+            return numericGradeKey(a) - numericGradeKey(b);
+          } else if (sortValue === 'grade-year'){
+            var gA = numericGradeKey(a);
+            var gB = numericGradeKey(b);
+            if (gA !== gB) return gA - gB;
+            return (a.year || 0) - (b.year || 0);
+          } else if (sortValue === 'percentile-desc'){
+            var pa = (metricsA.humanPercentile == null ? -Infinity : metricsA.humanPercentile);
+            var pb = (metricsB.humanPercentile == null ? -Infinity : metricsB.humanPercentile);
+            if (pb !== pa) return pb - pa;
+            if (a.year !== b.year) return a.year - b.year;
+            return numericGradeKey(a) - numericGradeKey(b);
+          } else if (sortValue === 'percentile-asc'){
+            var pa2 = (metricsA.humanPercentile == null ? Infinity : metricsA.humanPercentile);
+            var pb2 = (metricsB.humanPercentile == null ? Infinity : metricsB.humanPercentile);
+            if (pa2 !== pb2) return pa2 - pb2;
+            if (a.year !== b.year) return a.year - b.year;
+            return numericGradeKey(a) - numericGradeKey(b);
+          } else if (sortValue === 'gap-desc'){
+            var gapA = (a.llm_total || 0) - (humanScoreA || 0);
+            var gapB = (b.llm_total || 0) - (humanScoreB || 0);
+            return gapB - gapA;
+          } else if (sortValue === 'gap-asc'){
+            var gapA2 = (a.llm_total || 0) - (humanScoreA || 0);
+            var gapB2 = (b.llm_total || 0) - (humanScoreB || 0);
+            return gapA2 - gapB2;
+          } else if (sortValue === 'llm-score-desc'){
+            if ((b.llm_total || 0) !== (a.llm_total || 0)) return (b.llm_total || 0) - (a.llm_total || 0);
+            if (a.year !== b.year) return a.year - b.year;
+            return numericGradeKey(a) - numericGradeKey(b);
+          } else if (sortValue === 'human-score-desc'){
+            if ((humanScoreB || 0) !== (humanScoreA || 0)) return (humanScoreB || 0) - (humanScoreA || 0);
+            if (a.year !== b.year) return a.year - b.year;
+            return numericGradeKey(a) - numericGradeKey(b);
+          }
+          return 0;
+        };
+      }
+
       filteredEntries = filteredEntries.slice().sort(comparator);
+      updateRunTableSortIndicators();
       
       var bandKey = function(entry){
+        if (sortOverride && sortOverride.column) return '';
         if (sortValue === 'year-grade') return String(entry.year);
         if (sortValue === 'grade-year'){
           var key = (Array.isArray(entry.members) && entry.members.length)
@@ -3439,8 +3541,36 @@
     var runSortSelect = $('#human-run-sort');
     if (runSortSelect){
       runSortSelect.addEventListener('change', function(){
+        state.runTableSortOverride = null;
+        updateRunTableSortIndicators();
         if (state.selectedView === 'run' && state.runData){
           renderRunTable(state.runData);
+        }
+      });
+    }
+
+    if (runTableHeaders && runTableHeaders.length){
+      runTableHeaders.forEach(function(th){
+        if (!th || !th.dataset.sortKey) return;
+        if (!th.dataset.sortBound){
+          th.dataset.sortBound = 'true';
+          th.addEventListener('click', function(){
+            if (state.selectedView !== 'run' || !state.runData) return;
+            var sortKey = th.dataset.sortKey;
+            var nextDirection = 'asc';
+            if (state.runTableSortOverride && state.runTableSortOverride.column === sortKey){
+              nextDirection = state.runTableSortOverride.direction === 'asc' ? 'desc' : 'asc';
+            }
+            state.runTableSortOverride = { column: sortKey, direction: nextDirection };
+            updateRunTableSortIndicators();
+            renderRunTable(state.runData);
+          });
+          th.addEventListener('keydown', function(event){
+            if (event.key === 'Enter' || event.key === ' '){
+              event.preventDefault();
+              th.click();
+            }
+          });
         }
       });
     }

@@ -314,6 +314,19 @@ def coerce_list_of_bytes(x: Any) -> Optional[List[bytes]]:
             return out if out else None
     except Exception:
         pass
+    # Explicit numpy.ndarray handling (object arrays of bytes)
+    try:
+        import numpy as np  # type: ignore
+        if isinstance(x, np.ndarray):
+            out: List[bytes] = []
+            # Convert to list to avoid numpy scalars
+            for item in x.tolist():
+                b = coerce_bytes(item)
+                if b is not None:
+                    out.append(b)
+            return out if out else None
+    except Exception:
+        pass
     return None
 
 

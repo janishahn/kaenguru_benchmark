@@ -6,6 +6,7 @@ import math
 import re
 from typing import Iterable, Optional, Sequence, Tuple
 
+DECLINED_TOKEN = "DECLINED"
 PENALTY_FACTOR = 0.25
 START_POINTS_LOWER_GRADES = 24.0
 START_POINTS_UPPER_GRADES = 30.0
@@ -74,6 +75,12 @@ def start_points_for_members(members: Sequence[int]) -> float:
     return start_points_for_numbers(members)
 
 
+def is_declined(predicted: Optional[str]) -> bool:
+    if predicted is None:
+        return False
+    return predicted.strip().upper() == DECLINED_TOKEN
+
+
 def score_question(
     points: object,
     correct_answer: Optional[str],
@@ -96,6 +103,9 @@ def score_question(
             return -question_points * PENALTY_FACTOR, False
         return 0.0, False
 
+    if is_declined(predicted):
+        return 0.0, False
+
     normalized = predicted.strip().upper()
     if normalized == correct_answer:
         return question_points, True
@@ -105,6 +115,7 @@ def score_question(
 __all__ = [
     "coerce_points",
     "extract_grade_numbers",
+    "is_declined",
     "score_question",
     "start_points_for_group",
     "start_points_for_members",

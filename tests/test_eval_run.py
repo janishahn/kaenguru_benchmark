@@ -114,9 +114,7 @@ def run_eval(
     dataset_path: Path,
     model_id: str,
     responses,
-    reasoning="any",
     extra_args: Optional[List[str]] = None,
-    model_capabilities: Optional[Dict[str, Optional[bool]]] = None,
     capture_payloads: Optional[List[Dict[str, Any]]] = None,
 ):
     # Import module fresh
@@ -131,18 +129,8 @@ def run_eval(
     # Env
     monkeypatch.setenv("OPENROUTER_API_KEY", "test")
 
-    monkeypatch.setattr(eval_run, "probe_supported_parameters", lambda *_args, **_kwargs: None)
-
-    default_caps = {
-        "supports_internal_reasoning": True,
-        "supports_disabling_internal_reasoning": True,
-    }
-    if model_capabilities:
-        default_caps.update(model_capabilities)
-
     # Patch models registry to allow custom models if needed
     def fake_registry(_path):
-        # use provided model id, supports vision for default
         if model_id == "text-only/test":
             return {
                 model_id: eval_run.ModelInfo(
@@ -150,10 +138,7 @@ def run_eval(
                     label="TextOnly",
                     supports_vision=False,
                     supports_json_response_format=True,
-                    supports_internal_reasoning=default_caps.get("supports_internal_reasoning"),
-                    supports_disabling_internal_reasoning=default_caps.get(
-                        "supports_disabling_internal_reasoning"
-                    ),
+                    min_request_interval=None,
                 )
             }
         return {
@@ -162,10 +147,7 @@ def run_eval(
                 label="GPT5",
                 supports_vision=True,
                 supports_json_response_format=True,
-                supports_internal_reasoning=default_caps.get("supports_internal_reasoning"),
-                supports_disabling_internal_reasoning=default_caps.get(
-                    "supports_disabling_internal_reasoning"
-                ),
+                min_request_interval=None,
             )
         }
 
@@ -194,8 +176,6 @@ def run_eval(
         model_id,
         "--output_dir",
         str(out_dir),
-        "--reasoning",
-        reasoning,
         "--max_tokens",
         "64",
     ]
@@ -239,6 +219,10 @@ def test_answer_json_success(monkeypatch, tmp_path):
     row = df.iloc[0]
     assert row["predicted"] == "A"
     assert row["is_correct"] == True
+    assert row["reasoning_mode"] == "self-directed"
+
+    config = json.loads((run_dir / "config.json").read_text())
+    assert config["args"].get("reasoning") == "self-directed"
 
 
 def test_no_live_dashboard_flag(monkeypatch, tmp_path):
@@ -299,6 +283,7 @@ def test_no_live_dashboard_flag(monkeypatch, tmp_path):
     assert metrics["failed_count"] == 0
     assert metrics["accuracy"] == 1.0
     assert metrics["unknown_usage_count"] == 0
+    assert metrics["declined_count"] == 0
     assert metrics["warning_row_count"] == 1
     assert metrics["warning_counts"].get("regex_fallback") == 1
     assert metrics["total_reasoning_tokens"] is None
@@ -335,13 +320,14 @@ def test_unparsed_response_penalized(monkeypatch, tmp_path):
     assert metrics["total_points_earned"] == pytest.approx(-1.25)
 
 
-def test_cot_with_reason(monkeypatch, tmp_path):
-    dataset = write_parquet(tmp_path, [make_row(2)])
+def test_final_answer_line_precedence(monkeypatch, tmp_path):
+    dataset = write_parquet(tmp_path, [make_row(21)])
     payload = {
-        "id": "gen_2",
+        "id": "gen_final_line",
         "model": "openai/gpt-5",
-        "choices": [{"message": {"content": "{\"answer\":\"A\",\"reason\":\"kurz\"}"}}],
-        "usage": {"prompt_tokens": 12, "completion_tokens": 6, "total_tokens": 18, "cost": 0.003},
+        "choices": [
+            {"message": {"content": "Here is my reasoning...\nFinal answer: C"}}
+        ],
     }
     run_dir = run_eval(
         monkeypatch,
@@ -349,63 +335,91 @@ def test_cot_with_reason(monkeypatch, tmp_path):
         dataset,
         model_id="openai/gpt-5",
         responses=[FakeResp(200, payload)],
-        reasoning="cot",
     )
     df = pd.read_parquet(run_dir / "results.parquet", engine="pyarrow")
     row = df.iloc[0]
-    assert row["predicted"] == "A"
-    assert row["rationale"] == "kurz"
+    assert row["predicted"] == "C"
+    assert row["warnings"] in (None, [])
+    metrics = json.loads((run_dir / "metrics.json").read_text())
+    assert metrics["declined_count"] == 0
 
 
-def test_internal_reasoning_payload(monkeypatch, tmp_path):
-    dataset = write_parquet(tmp_path, [make_row(11)])
+def test_final_line_declined(monkeypatch, tmp_path):
+    dataset = write_parquet(tmp_path, [make_row(22)])
     payload = {
-        "id": "gen_internal",
+        "id": "gen_declined_line",
         "model": "openai/gpt-5",
-        "choices": [{"message": {"content": '{"answer":"B"}'}}],
-        "usage": {"prompt_tokens": 8, "completion_tokens": 4, "total_tokens": 12},
+        "choices": [
+            {"message": {"content": "Unsure about this problem.\nFinal answer: Declined."}}
+        ],
     }
-    captured: List[Dict[str, Any]] = []
-    run_eval(
+    run_dir = run_eval(
         monkeypatch,
         tmp_path,
         dataset,
         model_id="openai/gpt-5",
         responses=[FakeResp(200, payload)],
-        reasoning="internal",
-        capture_payloads=captured,
     )
-    assert captured, "request payload should be captured"
-    assert captured[0].get("reasoning") == {"enabled": True, "exclude": True}
+    df = pd.read_parquet(run_dir / "results.parquet", engine="pyarrow")
+    row = df.iloc[0]
+    assert row["predicted"] == "DECLINED"
+    assert row["points_earned"] == 0
+    assert "declined_explicit" in (row["warnings"] or [])
+    metrics = json.loads((run_dir / "metrics.json").read_text())
+    assert metrics["declined_count"] == 1
+    assert metrics["total_points_earned"] == pytest.approx(0.0)
 
 
-def test_internal_reasoning_requires_capability(monkeypatch, tmp_path):
-    dataset = write_parquet(tmp_path, [make_row(12)])
+def test_declined_phrase_detection(monkeypatch, tmp_path):
+    dataset = write_parquet(tmp_path, [make_row(23)])
     payload = {
-        "id": "gen_internal_fail",
+        "id": "gen_declined_phrase",
+        "model": "openai/gpt-5",
+        "choices": [
+            {"message": {"content": "After reviewing the options, I choose not to answer."}}
+        ],
+    }
+    run_dir = run_eval(
+        monkeypatch,
+        tmp_path,
+        dataset,
+        model_id="openai/gpt-5",
+        responses=[FakeResp(200, payload)],
+    )
+    df = pd.read_parquet(run_dir / "results.parquet", engine="pyarrow")
+    row = df.iloc[0]
+    assert row["predicted"] == "DECLINED"
+    assert "declined_phrase" in (row["warnings"] or [])
+
+
+def test_declined_phrase_german(monkeypatch, tmp_path):
+    dataset = write_parquet(tmp_path, [make_row(24)])
+    payload = {
+        "id": "gen_declined_de",
+        "model": "openai/gpt-5",
+        "choices": [
+            {"message": {"content": "Diese Aufgabe ist mehrdeutig; ich entscheide mich, nicht zu antworten."}}
+        ],
+    }
+    run_dir = run_eval(
+        monkeypatch,
+        tmp_path,
+        dataset,
+        model_id="openai/gpt-5",
+        responses=[FakeResp(200, payload)],
+    )
+    df = pd.read_parquet(run_dir / "results.parquet", engine="pyarrow")
+    row = df.iloc[0]
+    assert row["predicted"] == "DECLINED"
+
+
+def test_request_payload_has_no_response_format(monkeypatch, tmp_path):
+    dataset = write_parquet(tmp_path, [make_row(25)])
+    payload = {
+        "id": "gen_payload",
         "model": "openai/gpt-5",
         "choices": [{"message": {"content": '{"answer":"A"}'}}],
     }
-    with pytest.raises(SystemExit) as excinfo:
-        run_eval(
-            monkeypatch,
-            tmp_path,
-            dataset,
-            model_id="openai/gpt-5",
-            responses=[FakeResp(200, payload)],
-            reasoning="internal",
-            model_capabilities={"supports_internal_reasoning": None},
-        )
-    assert excinfo.value.code == 2
-
-
-def test_internal_effort_in_payload(monkeypatch, tmp_path):
-    dataset = write_parquet(tmp_path, [make_row(13)])
-    payload = {
-        "id": "gen_internal_effort",
-        "model": "openai/gpt-5",
-        "choices": [{"message": {"content": '{"answer":"C"}'}}],
-    }
     captured: List[Dict[str, Any]] = []
     run_eval(
         monkeypatch,
@@ -413,71 +427,15 @@ def test_internal_effort_in_payload(monkeypatch, tmp_path):
         dataset,
         model_id="openai/gpt-5",
         responses=[FakeResp(200, payload)],
-        reasoning="internal",
-        extra_args=["--internal-effort", "high"],
         capture_payloads=captured,
     )
-    assert captured[0].get("reasoning") == {"enabled": True, "exclude": True, "effort": "high"}
+    assert captured, "expected captured payload"
+    first_payload = captured[0]
+    assert "response_format" not in first_payload
+    assert "reasoning" not in first_payload
 
 
-def test_internal_effort_requires_internal_mode(monkeypatch, tmp_path):
-    dataset = write_parquet(tmp_path, [make_row(14)])
-    payload = {
-        "id": "gen_internal_effort_fail",
-        "model": "openai/gpt-5",
-        "choices": [{"message": {"content": '{"answer":"A"}'}}],
-    }
-    with pytest.raises(SystemExit) as excinfo:
-        run_eval(
-            monkeypatch,
-            tmp_path,
-            dataset,
-            model_id="openai/gpt-5",
-            responses=[FakeResp(200, payload)],
-            reasoning="any",
-            extra_args=["--internal-effort", "low"],
-        )
-    assert excinfo.value.code == 2
 
-
-def test_disable_reasoning_payload(monkeypatch, tmp_path):
-    dataset = write_parquet(tmp_path, [make_row(15)])
-    payload = {
-        "id": "gen_disable",
-        "model": "openai/gpt-5",
-        "choices": [{"message": {"content": '{"answer":"D"}'}}],
-    }
-    captured: List[Dict[str, Any]] = []
-    run_eval(
-        monkeypatch,
-        tmp_path,
-        dataset,
-        model_id="openai/gpt-5",
-        responses=[FakeResp(200, payload)],
-        reasoning="disable",
-        capture_payloads=captured,
-    )
-    assert captured[0].get("reasoning") == {"enabled": False, "exclude": True}
-
-
-def test_disable_requires_capability(monkeypatch, tmp_path):
-    dataset = write_parquet(tmp_path, [make_row(16)])
-    payload = {
-        "id": "gen_disable_fail",
-        "model": "openai/gpt-5",
-        "choices": [{"message": {"content": '{"answer":"E"}'}}],
-    }
-    with pytest.raises(SystemExit) as excinfo:
-        run_eval(
-            monkeypatch,
-            tmp_path,
-            dataset,
-            model_id="openai/gpt-5",
-            responses=[FakeResp(200, payload)],
-            reasoning="disable",
-            model_capabilities={"supports_disabling_internal_reasoning": None},
-        )
-    assert excinfo.value.code == 2
 
 
 def test_regex_fallback_and_missing_usage(monkeypatch, tmp_path):
@@ -660,41 +618,23 @@ def test_x_usage_header_fallback(monkeypatch, tmp_path):
     assert metrics2["reasoning_tokens_known_count"] == 1
 
 
-def test_legacy_none_alias(monkeypatch, tmp_path):
-    dataset = write_parquet(tmp_path, [make_row(17)])
-    payload = {
-        "id": "gen_none_alias",
-        "model": "openai/gpt-5",
-        "choices": [{"message": {"content": '{"answer":"A"}'}}],
-    }
-    run_dir = run_eval(
-        monkeypatch,
-        tmp_path,
-        dataset,
-        model_id="openai/gpt-5",
-        responses=[FakeResp(200, payload)],
-        reasoning="none",
-    )
-    config = json.loads((run_dir / "config.json").read_text())
-    assert config["args"]["reasoning"] == "any"
-
-
 def test_http_error_failure(monkeypatch, tmp_path):
     dataset = write_parquet(tmp_path, [make_row(4)])
+    # Use HTTP 400 which is not retryable, avoiding the retry delays
     run_dir = run_eval(
         monkeypatch,
         tmp_path,
         dataset,
         model_id="openai/gpt-5",
-        responses=[FakeResp(500, payload=None, text="Server error")],
+        responses=[FakeResp(400, payload=None, text="Bad request")],
     )
     df = pd.read_parquet(run_dir / "results.parquet", engine="pyarrow")
     row = df.iloc[0]
-    assert row["error"].startswith("http_error_500")
+    assert row["error"].startswith("http_error_400")
     assert pd.isna(row["predicted"]) or row["predicted"] is None
 
     failures = (run_dir / "failures.jsonl").read_text().strip().splitlines()
-    assert failures and json.loads(failures[0])["error"].startswith("http_error_500")
+    assert failures and json.loads(failures[0])["error"].startswith("http_error_400")
 
 
 def test_skip_images_for_text_only_model(monkeypatch, tmp_path):

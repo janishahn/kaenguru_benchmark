@@ -26,6 +26,12 @@
       <span class="summary-label">Answered</span>
       <span class="summary-value">{{ run.metrics.answered_count }}</span>
     </div>
+    {% if run.metrics.declined_count %}
+    <div class="summary-card">
+      <span class="summary-label">Chose not to answer</span>
+      <span class="summary-value">{{ run.metrics.declined_count }}</span>
+    </div>
+    {% endif %}
     <div class="summary-card">
       <span class="summary-label">Skipped</span>
       <span class="summary-value">{{ run.metrics.skipped_count }}</span>

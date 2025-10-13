@@ -13,7 +13,7 @@ from dataclasses import dataclass, asdict
 from datetime import datetime
 from io import BytesIO
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Set, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import httpx
 import pandas as pd
@@ -58,6 +58,86 @@ REQUIRED_COLUMNS = [
 
 
 LETTER_SET = {"A", "B", "C", "D", "E"}
+SELF_DIRECTED_MODE = "self-directed"
+DECLINED_TOKEN = "DECLINED"
+
+FINAL_ANSWER_PATTERN = re.compile(
+    r"(?im)^\s*(?:final\s*answer|antwort)\s*[:：\-–—]?\s*([^\n]+?)\s*$"
+)
+
+
+def _normalize_phrase(value: str) -> str:
+    normalized = value.lower()
+    normalized = normalized.replace("’", "'").replace("“", '"').replace("”", '"')
+    normalized = re.sub(r"[^a-z0-9äöüß ]+", " ", normalized)
+    normalized = re.sub(r"\s+", " ", normalized).strip()
+    return normalized
+
+
+DECLINE_ALIAS_RAW = [
+    "declined",
+    "i choose not to answer",
+    "i choose to not answer",
+    "choose not to answer",
+    "i decline to answer",
+    "i decline",
+    "i cannot determine with confidence",
+    "cannot determine with confidence",
+    "i cannot determine the answer",
+    "unable to determine",
+    "ich entscheide mich, nicht zu antworten",
+    "ich wähle, nicht zu antworten",
+    "antwort verweigern",
+    "ich verweigere die antwort",
+    "nicht mit ausreichender sicherheit bestimmbar",
+    "kann nicht mit ausreichender sicherheit bestimmen",
+    "ich weiß es nicht",
+    "weiß es nicht",
+    "keine ahnung",
+]
+
+DECLINE_ALIAS_NORMALIZED = {_normalize_phrase(item) for item in DECLINE_ALIAS_RAW}
+
+DECLINE_SEARCH_PATTERNS = [
+    re.compile(pattern, re.IGNORECASE)
+    for pattern in [
+        r"\bi\s+choose\s+not\s+to\s+answer\b",
+        r"\bchoose\s+not\s+to\s+answer\b",
+        r"\bi\s+decline\s+to\s+answer\b",
+        r"\bi\s+decline\b",
+        r"\bcannot\s+determine\s+(?:with\s+)?confidence\b",
+        r"\bunable\s+to\s+determine\b",
+        r"\bich\s+entscheide\s+mich,\s+nicht\s+zu\s+antworten\b",
+        r"\bich\s+wähle,\s+nicht\s+zu\s+antworten\b",
+        r"\bantwort\s+verweigern\b",
+        r"\bich\s+verweigere\s+die\s+antwort\b",
+        r"\bnicht\s+mit\s+ausreichender\s+sicherheit\s+bestimmbar\b",
+        r"\bkeine\s+ahnung\b",
+        r"\bich\s+weiß\s+es\s+nicht\b",
+    ]
+]
+
+
+def _clean_answer_token(raw: str) -> str:
+    token = raw.strip().strip("`\"'“”‘’")
+    token = re.sub(r"[\s\.\!\?؛؛。,…]+$", "", token).strip()
+    return token
+
+
+def _is_decline_token(candidate: str) -> bool:
+    normalized = _normalize_phrase(candidate)
+    return bool(normalized) and normalized in DECLINE_ALIAS_NORMALIZED
+
+
+def _text_contains_decline(text: str) -> bool:
+    if _is_decline_token(text):
+        return True
+    for pattern in DECLINE_SEARCH_PATTERNS:
+        if pattern.search(text):
+            return True
+    return False
+
+
 DEFAULT_RETRY_MAX_TOKENS = 256
 
 # HTTP statuses considered transient/retryable at either transport- or row-level.
@@ -81,10 +161,8 @@ class ModelInfo:
     id: str
     label: Optional[str] = None
     supports_vision: bool = False
-    supports_json_response_format: bool = False
     min_request_interval: Optional[float] = None
-    supports_internal_reasoning: Optional[bool] = None
-    supports_disabling_internal_reasoning: Optional[bool] = None
+    supports_json_response_format: bool = False
 
 
 @dataclass
@@ -117,89 +195,6 @@ class RowRecord:
     warnings: Optional[List[str]] = None
 
 
-class ReasoningCapabilityError(Exception):
-    """Raised when a requested reasoning mode is incompatible with model support."""
-
-
-VALID_REASONING_MODES = {"any", "cot", "internal", "disable"}
-REASONING_ALIASES = {"none": "any"}
-
-
-def canonicalize_reasoning_mode(value: Optional[str]) -> str:
-    if not value:
-        return "any"
-    normalized = value.strip().lower()
-    normalized = REASONING_ALIASES.get(normalized, normalized)
-    return normalized
-
-
-def build_reasoning_param(mode: str, *, effort: Optional[str] = None) -> Optional[Dict[str, Any]]:
-    if mode == "internal":
-        payload: Dict[str, Any] = {"enabled": True, "exclude": True}
-        if effort:
-            payload["effort"] = effort
-        return payload
-    if mode in {"cot", "disable"}:
-        return {"enabled": False, "exclude": True}
-    return None
-
-
-def probe_supported_parameters(model_id: str, api_key: str) -> Optional[Set[str]]:
-    url = "https://openrouter.ai/api/v1/models"
-    headers = {
-        "Authorization": f"Bearer {api_key}",
-        "Accept": "application/json",
-    }
-    try:
-        resp = httpx.get(url, headers=headers, timeout=5.0)
-    except Exception:
-        return None
-    if resp.status_code != 200:
-        return None
-    try:
-        data = resp.json()
-    except Exception:
-        return None
-
-    entries: List[Dict[str, Any]] = []
-    if isinstance(data, dict) and isinstance(data.get("data"), list):
-        entries = [item for item in data["data"] if isinstance(item, dict)]
-    elif isinstance(data, list):
-        entries = [item for item in data if isinstance(item, dict)]
-
-    for entry in entries:
-        if entry.get("id") != model_id:
-            continue
-        params = entry.get("supported_parameters")
-        if isinstance(params, list):
-            return {str(p) for p in params if isinstance(p, str)}
-        break
-    return None
-
-
-def apply_supported_parameters(model_info: ModelInfo, supported_parameters: Optional[Set[str]]) -> None:
-    if not supported_parameters:
-        return
-    if "reasoning" in supported_parameters and model_info.supports_internal_reasoning is None:
-        model_info.supports_internal_reasoning = True
-
-
-def ensure_reasoning_mode_supported(mode: str, model_info: ModelInfo) -> None:
-    def is_true(value: Optional[bool]) -> bool:
-        return value is True
-
-    if mode == "internal":
-        if not is_true(model_info.supports_internal_reasoning):
-            raise ReasoningCapabilityError(
-                "Model does not declare support for the unified 'reasoning' parameter. "
-                "Set supports_internal_reasoning=true in models.json or choose --reasoning any."
-            )
-    if mode in {"cot", "disable"}:
-        if not is_true(model_info.supports_disabling_internal_reasoning):
-            raise ReasoningCapabilityError(
-                "Model cannot be confirmed to disable internal reasoning. "
-                "Set supports_disabling_internal_reasoning=true in models.json or choose a different reasoning mode."
-            )
 @dataclass
 class WorkerOutcome:
     record: Optional[RowRecord]
@@ -262,28 +257,12 @@ def read_models_registry(path: str) -> Dict[str, ModelInfo]:
         elif isinstance(rate_limit, (int, float)) and rate_limit > 0:
             min_interval = 1.0 / float(rate_limit)
 
-        sir_raw = m.get("supports_internal_reasoning")
-        sir: Optional[bool]
-        if isinstance(sir_raw, bool):
-            sir = sir_raw
-        else:
-            sir = None
-
-        sdir_raw = m.get("supports_disabling_internal_reasoning")
-        sdir: Optional[bool]
-        if isinstance(sdir_raw, bool):
-            sdir = sdir_raw
-        else:
-            sdir = None
-
         info = ModelInfo(
             id=m.get("id"),
             label=m.get("label"),
             supports_vision=bool(m.get("supports_vision", False)),
             supports_json_response_format=bool(m.get("supports_json_response_format", False)),
             min_request_interval=min_interval,
-            supports_internal_reasoning=sir,
-            supports_disabling_internal_reasoning=sdir,
         )
         models[info.id] = info
     return models
@@ -393,38 +372,35 @@ def image_to_data_url(
 
 def build_messages(
     row: Dict[str, Any],
-    reasoning: str,
-    model: ModelInfo,
-    encoded_images: Dict[str, Optional[str]],
     *,
+    encoded_images: Dict[str, Optional[str]],
     image_detail: str = "auto",
 ) -> List[Dict[str, Any]]:
     language = (row.get("language") or "de").lower()
     is_de = language == "de"
-    answer_only_modes = {"any", "disable", "internal"}
 
-    if reasoning == "cot":
-        sys_text = (
-            "Du bist ein hilfreicher Assistent für Multiple-Choice-Aufgaben."
-            if is_de
-            else "You are a helpful assistant for multiple-choice tasks."
-        )
-        instr = (
-            'Denke Schritt für Schritt. Gib am Ende ausschließlich ein einzelnes JSON-Objekt aus: {"answer":"A|B|C|D|E","reason":"kurze Begründung"}. Kein weiterer Text.'
-            if is_de
-            else 'Think step by step. At the end output only a single JSON object: {"answer":"A|B|C|D|E","reason":"short justification"}. No other text.'
+    if is_de:
+        system_lines = [
+            "Du bist ein hilfreicher Assistent für Multiple-Choice-Aufgaben.",
+            "Bewertung: Eine korrekte Antwort erhält die vollen Punkte der Aufgabe; eine falsche oder nicht eindeutig auswertbare Endantwort zieht ein Viertel der Aufgabenpunkte ab; 'Ich entscheide mich, nicht zu antworten.' ergibt 0 Punkte ohne Abzug.",
+        "Wähle die beste Option (A–E). Wenn die richtige Option nicht mit ausreichender Sicherheit bestimmbar ist oder die Aufgabe mehrdeutig ist, kannst du ausdrücklich mit 'Ich entscheide mich, nicht zu antworten.' antworten. Begründungen sind optional.",
+            "Füge am Ende eine einzelne Zeile an: Final answer: A|B|C|D|E|Declined.",
+        ]
+        final_instruction = (
+            "Erinnere dich: Beende deine Antwort mit einer Zeile in diesem Format – Final answer: A|B|C|D|E|Declined."
         )
     else:
-        sys_text = (
-            "Du bist ein Assistent für automatisierte Multiple-Choice-Auswertung. Füge keine Gedankengänge, Schritte oder Erklärungen hinzu. Gib ausschließlich die geforderte Ausgabe zurück. Auch bei Nachfrage nach Erklärungen: nur die Endantwort."
-            if is_de
-            else "You are an assistant for automated multiple-choice evaluation. Do not include chain-of-thought, steps, or explanations. Return only the required output. Even if asked to show work, reply with the final answer only."
+        system_lines = [
+            "You are a helpful assistant for multiple-choice tasks.",
+            "Scoring: a correct answer earns the task's full points; an incorrect or unparseable final answer subtracts one quarter of the task's points; choosing not to answer earns 0 points with no penalty.",
+            "Select the best option (A–E). If the correct option cannot be determined with sufficient confidence or the question is ambiguous, you may explicitly reply 'I choose not to answer.' Reasoning is optional.",
+            "Add a single line at the end: Final answer: A|B|C|D|E|Declined.",
+        ]
+        final_instruction = (
+            "Remember to finish with a line in this format – Final answer: A|B|C|D|E|Declined."
         )
-        instr = (
-            'Gib genau ein kompaktes JSON-Objekt aus: {"answer":"A|B|C|D|E"}. Verwende einen Großbuchstaben aus [A,B,C,D,E]. Keine Codeblöcke, kein zusätzlicher Text, keine weiteren Felder.'
-            if is_de
-            else 'Output exactly one compact JSON object: {"answer":"A|B|C|D|E"}. Use an uppercase letter from [A,B,C,D,E]. Do not add code fences, extra text, or additional fields.'
-        )
+
+    sys_text = "\n".join(system_lines)
 
     content_parts: List[Dict[str, Any]] = []
 
@@ -468,37 +444,9 @@ def build_messages(
             )
 
     # Instruction last
-    content_parts.append({"type": "text", "text": instr})
+    content_parts.append({"type": "text", "text": final_instruction})
 
     messages: List[Dict[str, Any]] = [{"role": "system", "content": sys_text}]
-
-    if reasoning in answer_only_modes:
-        if is_de:
-            examples = [
-                (
-                    "Beispiel. Frage: 1 + 1 = ?\nAntwortmöglichkeiten:\nA) 1\nB) 2\nC) 3\nD) 4\nE) 5\nGib genau ein kompaktes JSON-Objekt: {\"answer\":\"A|B|C|D|E\"}.",
-                    "B",
-                ),
-                (
-                    "Beispiel. Frage: Erster Buchstabe des Alphabets?\nAntwortmöglichkeiten:\nA) A\nB) B\nC) C\nD) D\nE) E\nGib genau ein kompaktes JSON-Objekt: {\"answer\":\"A|B|C|D|E\"}.",
-                    "A",
-                ),
-            ]
-        else:
-            examples = [
-                (
-                    "Example. Question: 1 + 1 = ?\nAnswer choices:\nA) 1\nB) 2\nC) 3\nD) 4\nE) 5\nOutput exactly one compact JSON object: {\"answer\":\"A|B|C|D|E\"}.",
-                    "B",
-                ),
-                (
-                    "Example. Question: First letter of the alphabet?\nAnswer choices:\nA) A\nB) B\nC) C\nD) D\nE) E\nOutput exactly one compact JSON object: {\"answer\":\"A|B|C|D|E\"}.",
-                    "A",
-                ),
-            ]
-        for prompt_text, answer_letter in examples:
-            messages.append({"role": "user", "content": [{"type": "text", "text": prompt_text}]})
-            messages.append({"role": "assistant", "content": json.dumps({"answer": answer_letter})})
-
     messages.append({"role": "user", "content": content_parts})
     return messages
 
@@ -568,34 +516,6 @@ def normalize_message_content(content: Any) -> str:
     return str(content)
 
 
-def build_response_format(reasoning: str) -> Dict[str, Any]:
-    base_schema: Dict[str, Any] = {
-        "type": "object",
-        "properties": {
-            "answer": {
-                "type": "string",
-                "pattern": "^[A-E]$",
-                "description": "One of A, B, C, D, E",
-            },
-        },
-        "required": ["answer"],
-        "additionalProperties": False,
-    }
-    if reasoning == "cot":
-        base_schema["properties"]["reason"] = {
-            "type": "string",
-            "description": "Short justification",
-        }
-        base_schema["required"] = ["answer", "reason"]
-    return {
-        "type": "json_schema",
-        "json_schema": {
-            "name": "multiple_choice_answer",
-            "schema": base_schema,
-        },
-    }
-
-
 def write_jsonl_line(handle, obj: Dict[str, Any]) -> None:
     handle.write(json.dumps(obj, ensure_ascii=False) + "\n")
     handle.flush()
@@ -643,44 +563,62 @@ def resolve_dataset_path(raw_path: str) -> str:
     return expanded
 
 
-def parse_answer_from_text(text: str, reasoning: str) -> Tuple[Optional[str], Optional[str], Optional[str]]:
+def parse_answer_from_text(text: str) -> Tuple[Optional[str], Optional[str], Optional[str]]:
     # returns (answer, rationale, parse_warning)
-    if not text:
+    if not text or not text.strip():
         return None, None, "empty_response"
-    # Try direct JSON parse
-    def try_json(s: str) -> Tuple[Optional[str], Optional[str]]:
-        try:
-            data = json.loads(s)
-            if isinstance(data, dict):
-                ans = data.get("answer")
-                if isinstance(ans, str):
-                    ans = ans.strip().upper()
-                    rat = None
-                    if reasoning == "cot":
-                        r = data.get("reason")
-                        if isinstance(r, str):
-                            rat = r
-                    if ans in LETTER_SET:
-                        return ans, rat
-        except Exception:
-            pass
+
+    def interpret_token(raw_value: str) -> Tuple[Optional[str], Optional[str]]:
+        cleaned = _clean_answer_token(raw_value)
+        upper = cleaned.upper()
+        if upper in LETTER_SET:
+            return upper, None
+        if _is_decline_token(cleaned):
+            return DECLINED_TOKEN, "declined_explicit"
         return None, None
 
-    ans, rat = try_json(text)
-    if ans:
-        return ans, rat, None
+    final_matches = list(FINAL_ANSWER_PATTERN.finditer(text))
+    if final_matches:
+        candidate_raw = final_matches[-1].group(1)
+        token, warn = interpret_token(candidate_raw)
+        if token:
+            return token, None, warn
 
-    # Try to extract first JSON object in text
-    match = re.search(r"\{[\s\S]*?\}", text)
+    def try_json_block(s: str) -> Tuple[Optional[str], Optional[str], Optional[str]]:
+        try:
+            data = json.loads(s)
+        except Exception:
+            return None, None, None
+        if not isinstance(data, dict):
+            return None, None, None
+        ans_value = data.get("answer")
+        if not isinstance(ans_value, str):
+            return None, None, None
+        token, warn = interpret_token(ans_value)
+        if token is None:
+            return None, None, None
+        rat_value = data.get("reason")
+        rationale = rat_value if isinstance(rat_value, str) else None
+        return token, rationale, warn
+
+    ans_json, rat_json, warn_json = try_json_block(text)
+    if ans_json:
+        return ans_json, rat_json, warn_json
+
+    json_match = re.search(r"\{[\s\S]*?\}", text)
+    if json_match:
+        ans_extracted, rat_extracted, warn_extracted = try_json_block(json_match.group(0))
+        if ans_extracted:
+            if warn_extracted is None:
+                warn_extracted = "json_extracted"
+            return ans_extracted, rat_extracted, warn_extracted
+
+    if _text_contains_decline(text):
+        return DECLINED_TOKEN, None, "declined_phrase"
+
+    match = re.search(r"\b([A-Ea-e])\b", text)
     if match:
-        ans2, rat2 = try_json(match.group(0))
-        if ans2:
-            return ans2, rat2, "json_extracted"
-
-    # Fallback regex: first standalone A–E
-    match2 = re.search(r"\b([A-Ea-e])\b", text)
-    if match2:
-        return match2.group(1).upper(), None if reasoning != "cot" else None, "regex_fallback"
+        return match.group(1).upper(), None, "regex_fallback"
 
     return None, None, "no_parse"
 
@@ -770,7 +708,7 @@ def build_failure_record(
         predicted=None,
         is_correct=scored_correct,
         points_earned=points_earned,
-        reasoning_mode=args.reasoning,
+        reasoning_mode=SELF_DIRECTED_MODE,
         latency_ms=sum(latencies) if latencies else None,
         prompt_tokens=None,
         completion_tokens=None,
@@ -857,9 +795,7 @@ async def evaluate_single_row(
 
     messages = build_messages(
         row,
-        args.reasoning,
-        model_info,
-        encoded_images,
+        encoded_images=encoded_images,
         image_detail=(args.image_detail or "auto"),
     )
 
@@ -870,11 +806,6 @@ async def evaluate_single_row(
         "top_p": args.top_p,
         "usage": {"include": True},
     }
-    reasoning_payload = build_reasoning_param(args.reasoning, effort=args.internal_effort)
-    if reasoning_payload is not None:
-        payload["reasoning"] = reasoning_payload
-    if model_info.supports_json_response_format:
-        payload["response_format"] = build_response_format(args.reasoning)
 
     max_tokens_current = args.max_tokens
     attempt = 0
@@ -1117,7 +1048,7 @@ async def evaluate_single_row(
                 }
             )
 
-        ans, rat, parse_warn = parse_answer_from_text(content_text or "", args.reasoning)
+        ans, rat, parse_warn = parse_answer_from_text(content_text or "")
 
         should_retry = False
         finish_values = [finish_reason, native_finish]
@@ -1143,12 +1074,12 @@ async def evaluate_single_row(
 
         if (
             ans is None
-            and parse_warn == "no_parse"
+            and parse_warn in {"no_parse", "empty_response"}
             and not parse_retry_performed
             and attempt < max_attempts
         ):
             parse_retry_performed = True
-            warnings.append("retry_due_to_no_parse")
+            warnings.append(f"retry_due_to_{parse_warn}")
             continue
 
         break
@@ -1235,7 +1166,7 @@ async def evaluate_single_row(
         predicted=ans,
         is_correct=is_correct,
         points_earned=points_earned,
-        reasoning_mode=args.reasoning,
+        reasoning_mode=SELF_DIRECTED_MODE,
         latency_ms=sum(latencies) if latencies else None,
         prompt_tokens=prompt_tokens,
         completion_tokens=completion_tokens,
@@ -1468,18 +1399,8 @@ def main():
     parser = argparse.ArgumentParser(description="LLM evaluation runner for Känguru benchmark")
     parser.add_argument("--dataset", required=True, help="Path to dataset .parquet")
     parser.add_argument("--model", required=True, help="Model ID from models.json")
-    parser.add_argument(
-        "--reasoning",
-        choices=["any", "cot", "internal", "disable", "none"],
-        default="any",
-        help="Reasoning control: 'any' (default, legacy 'none'), 'cot', 'internal', or 'disable'.",
-    )
-    parser.add_argument(
-        "--internal-effort",
-        choices=["low", "medium", "high"],
-        default=None,
-        help="Optional effort hint when using --reasoning internal (ignored otherwise).",
-    )
+    parser.add_argument("--reasoning", default=None, help=argparse.SUPPRESS)
+    parser.add_argument("--internal-effort", default=None, help=argparse.SUPPRESS)
     parser.add_argument("--max_tokens", type=int, default=None)
     parser.add_argument("--temperature", type=float, default=0.0)
     parser.add_argument("--top_p", type=float, default=1.0)
@@ -1520,14 +1441,15 @@ def main():
     
     args = parser.parse_args()
 
-    args.reasoning = canonicalize_reasoning_mode(args.reasoning)
-    if args.reasoning not in VALID_REASONING_MODES:
-        print(f"ERROR: unsupported reasoning mode '{args.reasoning}'.", file=sys.stderr)
-        sys.exit(2)
-
-    if args.internal_effort and args.reasoning != "internal":
-        print("ERROR: --internal-effort can only be used with --reasoning internal.", file=sys.stderr)
-        sys.exit(2)
+    legacy_reasoning = args.reasoning
+    legacy_internal_effort = args.internal_effort
+    if legacy_reasoning is not None or legacy_internal_effort is not None:
+        print(
+            "Warning: --reasoning/--internal-effort are ignored; the evaluator now runs in self-directed mode only.",
+            file=sys.stderr,
+        )
+    args.reasoning = None
+    args.internal_effort = None
 
     stdout_isatty = sys.stdout.isatty()
     if args.live_dashboard is True:
@@ -1559,20 +1481,12 @@ def main():
         sys.exit(2)
     model_info = models[args.model]
 
-    supported_parameters = probe_supported_parameters(model_info.id, api_key)
-    apply_supported_parameters(model_info, supported_parameters)
-
     try:
         dataset_path = resolve_dataset_path(args.dataset)
     except Exception as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
         sys.exit(2)
 
-    try:
-        ensure_reasoning_mode_supported(args.reasoning, model_info)
-    except ReasoningCapabilityError as exc:
-        print(f"ERROR: {exc}", file=sys.stderr)
-        sys.exit(2)
 
     run_dir, ts = ensure_output_dir(args.output_dir, args.model)
 
@@ -1693,9 +1607,7 @@ def main():
         print(f"  Usage events: {str(events_path)}")
     else:
         print("  Usage events: disabled")
-    print(f"  Reasoning: {args.reasoning}")
-    if args.reasoning == "internal" and args.internal_effort:
-        print(f"  Internal reasoning effort: {args.internal_effort}")
+    print(f"  Reasoning: {SELF_DIRECTED_MODE}")
     if avg_points is not None:
         print(f"  Avg points: {avg_points:.2f}")
     print(f"  Year distribution: {year_desc}")
@@ -1747,9 +1659,14 @@ def main():
 
     if len(results_df.columns) > 0:
         answered_mask = results_df["predicted"].notna() & results_df["error"].isna()
+        declined_mask = (
+            results_df["predicted"].fillna("").astype(str).str.upper() == DECLINED_TOKEN
+        ) & results_df["error"].isna()
     else:
         answered_mask = pd.Series([], dtype=bool)
+        declined_mask = pd.Series([], dtype=bool)
     answered_count = int(answered_mask.sum())
+    declined_count = int(declined_mask.sum()) if len(results_df.columns) > 0 else 0
     if len(results_df.columns) > 0:
         failed_count = int(results_df["error"].notna().sum())
     else:
@@ -1770,7 +1687,7 @@ def main():
         start_points_total = 0.0
         if not points_series.empty:
             combos = results_df.loc[points_series > 0, ["year", "group"]]
-            seen_keys: Set[Tuple[str, str]] = set()
+            seen_keys: set[Tuple[str, str]] = set()
             for year_value, group_value in combos.itertuples(index=False):
                 if pd.isna(group_value):
                     continue
@@ -1890,6 +1807,7 @@ def main():
 
     metrics = {
         "answered_count": answered_count,
+        "declined_count": declined_count,
         "skipped_count": skipped_count,
         "failed_count": failed_count,
         "accuracy": accuracy,
@@ -1922,6 +1840,8 @@ def main():
     args_snapshot = vars(args).copy()
     args_snapshot["dataset"] = dataset_path
     args_snapshot["worker_count"] = worker_count
+    args_snapshot["reasoning"] = SELF_DIRECTED_MODE
+    args_snapshot["internal_effort"] = None
     config = {
         "timestamp_utc": ts,
         "args": args_snapshot,
@@ -1943,6 +1863,8 @@ def main():
     print()
     print("Summary:")
     print(f"  Answered: {answered_count}")
+    if declined_count > 0:
+        print(f"  Chose not to answer: {declined_count}")
     print(f"  Skipped: {skipped_count}")
     print(f"  Failed: {failed_count}")
     print(f"  Accuracy: {accuracy:.3f}")

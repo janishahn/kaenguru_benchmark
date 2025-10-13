@@ -17,6 +17,7 @@ class BreakdownEntry(BaseModel):
 
 class RunMetrics(BaseModel):
     answered_count: int = 0
+    declined_count: int = 0
     skipped_count: int = 0
     failed_count: int = 0
     accuracy: float = 0.0

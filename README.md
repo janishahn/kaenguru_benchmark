@@ -26,15 +26,15 @@ Input Data
 
 Run Examples
 
-- Vision (GPT‑5), default reasoning (models may think internally or not):
-  - `uv run python eval_run.py --dataset /abs/path/to/dataset.parquet --model openai/gpt-5 --reasoning any`
-    - Legacy alias `--reasoning none` maps to the same behavior.
-- Vision (GPT‑5), explicit chain-of-thought (requires the model to support disabling internal reasoning):
-  - `uv run python eval_run.py --dataset /abs/path/to/dataset.parquet --model openai/gpt-5 --reasoning cot`
-- Vision (GPT‑5), internal reasoning enabled but hidden from the response:
-  - `uv run python eval_run.py --dataset /abs/path/to/dataset.parquet --model openai/gpt-5 --reasoning internal --internal-effort high`
-- Vision (GPT‑5), internal reasoning explicitly disabled (requires the model to support disabling internal reasoning):
-  - `uv run python eval_run.py --dataset /abs/path/to/dataset.parquet --model openai/gpt-5 --reasoning disable`
+- Vision (GPT‑5):
+  - `uv run python eval_run.py --dataset /abs/path/to/dataset.parquet --model openai/gpt-5`
+  - Responses may include or omit visible reasoning. Every reply must finish with a line of the form `Final answer: A|B|C|D|E|Declined` so the evaluator can reliably parse the result.
+
+Response Format Expectations
+
+- Reasoning is optional. Models may provide intermediate thoughts, but the evaluator only scores the choice communicated in the final line.
+- If the correct option cannot be determined confidently, end with `Final answer: Declined`. This is scored neutrally (0 points, no penalty) and recorded separately.
+- Any other outputs (omitted final line or malformed responses) are treated as errors and retried once before being scored as incorrect.
 - Text-only evaluation (skips multimodal questions):
   - `uv run python eval_run.py --dataset /abs/path/to/dataset.parquet --model openai/gpt-5 --text-only`
 - Add `--sequential` if you need to process requests strictly one at a time.
@@ -45,7 +45,6 @@ Advanced Runner Arguments
 - `--seed N`: Set the random seed for sampling when using `--limit`.
 - `--text-only`: Evaluate only text (non-multimodal) questions.
 - `--fail-fast`: Stop the run on the first error.
-- `--internal-effort {low,medium,high}`: Optional hint when `--reasoning internal` is active; ignored for other modes.
 - For live dashboard customization: `--live-dashboard`, `--no-live-dashboard`, `--dashboard-refresh-hz HZ`, `--recent-items N`, `--ui-compact`.
 
 Dataset Filtering
@@ -59,7 +58,7 @@ Dataset Filtering
 
 Scoring
 
-- LLM runs follow the official Känguru convention: grades 3–6 start with 24 points and grades 7–13 start with 30. Correct answers earn the full task value, unanswered questions score 0, and wrong or unparsed answers subtract one quarter of the task value (for example, -0.75, -1.0, -1.25). Totals and weighted accuracy include this start capital so model scores align with the published human ranges.
+- LLM runs follow the official Känguru convention: grades 3–6 start with 24 points and grades 7–13 start with 30. Correct answers earn the full task value, unanswered questions score 0, and wrong or unparseable final answers subtract one quarter of the task value (for example, -0.75, -1.0, -1.25). Choosing `Declined` earns 0 points with no penalty; it still counts as an answered question for accuracy reporting. Totals and weighted accuracy include the start capital so model scores align with the published human ranges.
 
 Image Controls (to reduce input bloat)
 
@@ -94,7 +93,7 @@ Dashboard
 - Launch the dashboard locally: `uv run python dashboard.py --host 127.0.0.1 --port 8000`
 - Open `http://127.0.0.1:8000` in a browser. The UI works entirely offline; all JS/CSS dependencies are vendored.
 - Overview page: cards summarize every run (accuracy badges, answered/skipped counts, latency/tokens averages). Failures and unknown-usage are surfaced as warning chips. Use the Compare button to pre-fill selectors on the compare page.
-- Run detail: filter sidebar (group, year, language, multimodal, correctness, reasoning mode, value ranges, warnings) drives server-side pagination and charts. Presets are stored in `localStorage`. Charts (group/year breakdowns, confusion matrix, latency/tokens histograms, predicted-letter distribution) update with the active filters. Click a row to open the drawer with dataset content (problem, answer choices, images, rationale text, warnings); a toggle reveals the raw model response when present. The issues panel surfaces top warning types and the failures timeline, with deep links back to affected ids.
+- Run detail: filter sidebar (group, year, language, multimodal, correctness, reasoning mode — legacy runs may show historical modes; new runs appear as “self-directed” — value ranges, warnings) drives server-side pagination and charts. Presets are stored in `localStorage`. Charts (group/year breakdowns, confusion matrix, latency/tokens histograms, predicted-letter distribution) update with the active filters. Click a row to open the drawer with dataset content (problem, answer choices, images, rationale text, warnings); a toggle reveals the raw model response when present. The issues panel surfaces top warning types and the failures timeline, with deep links back to affected ids.
 - When human baselines are available, the run detail header surfaces the best human percentile/z-score and the dashboard exposes an aggregate comparison page.
 - Compare page: pick two runs to view metric deltas, group/year delta bars, and a per-id diff table. The view selector can restrict to changed/improved/regressed rows; optional limit caps the diff table size. Enable the confusion-matrix toggle to preview both runs' confusion matrices side by side.
 - **Scientific Analysis page**: A new page for advanced analysis across multiple runs.
@@ -154,8 +153,6 @@ Example `models.json` entry (all optional fields shown):
       "label": "OpenAI GPT-5",
       "supports_vision": true,
       "supports_json_response_format": true,
-      "supports_internal_reasoning": true,
-      "supports_disabling_internal_reasoning": true,
       "rate_limit": {
         "requests_per_second": 3,
         "requests_per_minute": 150,
@@ -167,6 +164,4 @@ Example `models.json` entry (all optional fields shown):
 ```
 
 - You can supply any subset of the `rate_limit` fields. The evaluator converts the first valid value into an initial inter-request delay and adapts from there based on live responses.
-- `supports_internal_reasoning`: mark `true` when the provider/model accepts the unified `reasoning` parameter (e.g., to enable hidden internal thinking). Leave unset/`null` if unknown.
-- `supports_disabling_internal_reasoning`: mark `true` when the provider/model allows forcing internal reasoning off. Modes `cot` and `disable` require this flag.
-- The runner will attempt to auto-detect `reasoning` support via the OpenRouter Models API when possible; explicit registry flags override the probe.
+- `supports_internal_reasoning` / `supports_disabling_internal_reasoning`: legacy fields that are now ignored; the evaluator always runs in self-directed mode.

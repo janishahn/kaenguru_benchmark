@@ -20,6 +20,10 @@ dependencies = [
     "cachetools>=5.3",
     "rich>=13.7",
     "pyqt5>=5.15.11",
+    "jupyter>=1.1.1",
+    "python-multipart>=0.0.20",
+    "matplotlib>=3.10.6",
+    "scipy>=1.16.2",
 ]
 
 [tool.pytest.ini_options]

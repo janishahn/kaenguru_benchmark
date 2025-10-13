@@ -60,6 +60,16 @@ REQUIRED_COLUMNS = [
 LETTER_SET = {"A", "B", "C", "D", "E"}
 DEFAULT_RETRY_MAX_TOKENS = 256
 
+# HTTP statuses considered transient/retryable at either transport- or row-level.
+# Includes timeouts and common CDN gateway errors in addition to rate limit and 5xx.
+RETRYABLE_STATUS_CODES = {
+    408,  # Request Timeout
+    425,  # Too Early (ask client to retry)
+    429,  # Too Many Requests
+    500, 502, 503, 504,  # Typical server/gateway errors
+    520, 521, 522, 523, 524,  # Common CDN edge/gateway errors
+}
+
 
 def default_worker_count() -> int:
     cpu = os.cpu_count() or 4
@@ -684,7 +694,8 @@ async def request_with_retries(
     on_status: Optional[Callable[[int], None]] = None,
     on_throttle: Optional[Callable[[], None]] = None,
 ) -> Tuple[httpx.Response, float]:
-    delays = [0.5, 1.0, 2.0]
+    # Slightly extended deterministic backoff to better absorb rare 429s.
+    delays = [0.5, 1.0, 2.0, 4.0]
     last_exc: Optional[Exception] = None
     start = time.perf_counter()
     for attempt in range(len(delays) + 1):
@@ -704,7 +715,7 @@ async def request_with_retries(
             except Exception:
                 pass
 
-        if resp.status_code in (429, 500, 502, 503, 504):
+        if resp.status_code in RETRYABLE_STATUS_CODES:
             if on_throttle is not None:
                 try:
                     on_throttle()
@@ -938,6 +949,22 @@ async def evaluate_single_row(
                     "status_code": resp.status_code,
                 }
             )
+            # If this status is retryable, perform a row-level retry instead of failing immediately
+            # to further reduce the chance of a final failure (e.g., rare 429 slipping through).
+            if resp.status_code in RETRYABLE_STATUS_CODES and attempt < max_attempts:
+                try:
+                    await limiter.record_throttle()
+                except Exception:
+                    pass
+                if metrics is not None:
+                    try:
+                        metrics.record_throttle()
+                    except Exception:
+                        pass
+                row_retry_delays = [2.0, 4.0, 8.0]
+                delay_idx = min(max(0, attempt - 1), len(row_retry_delays) - 1)
+                await asyncio.sleep(row_retry_delays[delay_idx])
+                continue
             failure_entry = {
                 "id": row.get("id"),
                 "status_code": resp.status_code,

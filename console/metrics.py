@@ -27,6 +27,7 @@ class UsageEvent:
     completion_tokens: Optional[int] = None
     total_tokens: Optional[int] = None
     reasoning_tokens: Optional[int] = None
+    explicit_reasoning_tokens: Optional[int] = None
     cached_prompt_tokens: Optional[int] = None
     audio_prompt_tokens: Optional[int] = None
     cost_usd_known: Optional[float] = None
@@ -51,6 +52,7 @@ class RecentItem:
     completion_tokens: Optional[int]
     total_tokens: Optional[int]
     reasoning_tokens: Optional[int]
+    explicit_reasoning_tokens: Optional[int]
     cached_prompt_tokens: Optional[int]
     cost_usd_known: Optional[float]
     cost_usd_calc: Optional[float]
@@ -92,6 +94,7 @@ class DashboardSnapshot:
     completion_tokens_total: int
     total_tokens_total: int
     reasoning_tokens_total: int
+    explicit_reasoning_tokens_total: int
     cached_prompt_tokens_total: int
     items_with_usage: int
     mean_tokens_per_item: Optional[float]
@@ -135,6 +138,7 @@ class Aggregator:
         self._completion_tokens_total = 0
         self._total_tokens_total = 0
         self._reasoning_tokens_total = 0
+        self._explicit_reasoning_tokens_total = 0
         self._cached_prompt_tokens_total = 0
 
         self._items_with_usage = 0
@@ -194,6 +198,7 @@ class Aggregator:
         completion_tokens = event.completion_tokens or 0
         total_tokens = event.total_tokens or (prompt_tokens + completion_tokens) or 0
         reasoning_tokens = event.reasoning_tokens or 0
+        explicit_reasoning_tokens = event.explicit_reasoning_tokens or 0
         cached_prompt_tokens = event.cached_prompt_tokens or 0
 
         if total_tokens > 0:
@@ -206,6 +211,8 @@ class Aggregator:
             self._completion_tokens_total += completion_tokens
         if reasoning_tokens > 0:
             self._reasoning_tokens_total += reasoning_tokens
+        if explicit_reasoning_tokens > 0:
+            self._explicit_reasoning_tokens_total += explicit_reasoning_tokens
         if cached_prompt_tokens > 0:
             self._cached_prompt_tokens_total += cached_prompt_tokens
 
@@ -235,6 +242,7 @@ class Aggregator:
                 completion_tokens=event.completion_tokens,
                 total_tokens=event.total_tokens,
                 reasoning_tokens=event.reasoning_tokens,
+                explicit_reasoning_tokens=event.explicit_reasoning_tokens,
                 cached_prompt_tokens=event.cached_prompt_tokens,
                 cost_usd_known=event.cost_usd_known,
                 cost_usd_calc=event.cost_usd_calc,
@@ -403,6 +411,7 @@ class Aggregator:
                 completion_tokens_total=self._completion_tokens_total,
                 total_tokens_total=self._total_tokens_total,
                 reasoning_tokens_total=self._reasoning_tokens_total,
+                explicit_reasoning_tokens_total=self._explicit_reasoning_tokens_total,
                 cached_prompt_tokens_total=self._cached_prompt_tokens_total,
                 items_with_usage=self._items_with_usage,
                 mean_tokens_per_item=mean_tokens,

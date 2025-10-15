@@ -185,6 +185,7 @@ class RowRecord:
     total_tokens: Optional[int]
     # Extra usage details when available from providers (e.g., OpenRouter)
     reasoning_tokens: Optional[int] = None
+    explicit_reasoning_tokens: Optional[int] = None
     cached_prompt_tokens: Optional[int] = None
     audio_prompt_tokens: Optional[int] = None
     cost_usd: Optional[float] = None
@@ -824,7 +825,7 @@ async def evaluate_single_row(
     attempt = 0
     max_attempts = 5
     combined_usage: Dict[str, float] = {}
-    combined_usage_details: Dict[str, float] = {}  # reasoning_tokens, cached_prompt_tokens, audio_prompt_tokens
+    combined_usage_details: Dict[str, float] = {}  # reasoning_tokens, cached_prompt_tokens, audio_prompt_tokens, explicit_reasoning_tokens
     last_usage: Optional[Dict[str, Any]] = None
     latencies: List[float] = []
     last_status_code: Optional[int] = None
@@ -939,30 +940,61 @@ async def evaluate_single_row(
             gen_id = data.get("id")
             choices = data.get("choices") or []
             if choices and isinstance(choices, list):
-                choice0 = choices[0] or {}
+                # Some providers may return None entries; guard accordingly
+                sanitized_choices = [choice for choice in choices if isinstance(choice, dict)]
+                choice0 = sanitized_choices[0] if sanitized_choices else (choices[0] or {})
                 finish_reason = choice0.get("finish_reason")
                 native_finish = choice0.get("native_finish_reason")
                 content_raw = ((choice0.get("message") or {}).get("content"))
                 content_text = normalize_message_content(content_raw)
+            else:
+                choice0 = {}
+
+            usage_key_aliases = {
+                "prompt_tokens": ["input_tokens", "prompt_tokens"],
+                "completion_tokens": ["output_tokens", "completion_tokens"],
+                "total_tokens": ["total_tokens"],
+            }
             usage = data.get("usage")
             if isinstance(usage, dict):
                 last_usage = usage
-                for key in ("prompt_tokens", "completion_tokens", "total_tokens"):
-                    val = usage.get(key)
-                    if isinstance(val, (int, float)):
-                        combined_usage[key] = combined_usage.get(key, 0.0) + float(val)
+                for dst_key, src_keys in usage_key_aliases.items():
+                    for src_key in src_keys:
+                        val = usage.get(src_key)
+                        if isinstance(val, (int, float)):
+                            combined_usage[dst_key] = combined_usage.get(dst_key, 0.0) + float(val)
+                            break
                 # Details when available
-                prompt_details = usage.get("prompt_tokens_details") or {}
+                prompt_details = None
+                for detail_key in ("prompt_tokens_details", "input_tokens_details"):
+                    details_candidate = usage.get(detail_key)
+                    if isinstance(details_candidate, dict):
+                        prompt_details = details_candidate
+                        break
+                if prompt_details is None:
+                    prompt_details = {}
                 if isinstance(prompt_details, dict):
                     for k_src, k_dst in (("cached_tokens", "cached_prompt_tokens"), ("audio_tokens", "audio_prompt_tokens")):
                         val = prompt_details.get(k_src)
                         if isinstance(val, (int, float)):
                             combined_usage_details[k_dst] = combined_usage_details.get(k_dst, 0.0) + float(val)
-                completion_details = usage.get("completion_tokens_details") or {}
+                completion_details = None
+                for detail_key in ("completion_tokens_details", "output_tokens_details"):
+                    details_candidate = usage.get(detail_key)
+                    if isinstance(details_candidate, dict):
+                        completion_details = details_candidate
+                        break
+                if completion_details is None:
+                    completion_details = {}
                 if isinstance(completion_details, dict):
                     rt = completion_details.get("reasoning_tokens")
                     if isinstance(rt, (int, float)):
                         combined_usage_details["reasoning_tokens"] = combined_usage_details.get("reasoning_tokens", 0.0) + float(rt)
+                        combined_usage_details["explicit_reasoning_tokens"] = combined_usage_details.get("explicit_reasoning_tokens", 0.0) + float(rt)
+                    # Some providers report visible reasoning separately (e.g., output_text tokens)
+                    explicit_rt = completion_details.get("explicit_reasoning_tokens")
+                    if isinstance(explicit_rt, (int, float)):
+                        combined_usage_details["explicit_reasoning_tokens"] = combined_usage_details.get("explicit_reasoning_tokens", 0.0) + float(explicit_rt)
                 cost_val = usage.get("cost") or usage.get("total_cost")
                 if isinstance(cost_val, str):
                     try:
@@ -1009,13 +1041,33 @@ async def evaluate_single_row(
                             parsed = None
                     # Apply parsed usage fields if any
                     if isinstance(parsed, dict):
-                        for key in ("prompt_tokens", "completion_tokens", "total_tokens"):
-                            val = parsed.get(key)
-                            if isinstance(val, (int, float)):
-                                combined_usage[key] = combined_usage.get(key, 0.0) + float(val)
+                        for dst_key, src_keys in usage_key_aliases.items():
+                            for src_key in src_keys:
+                                val = parsed.get(src_key)
+                                if isinstance(val, (int, float)):
+                                    combined_usage[dst_key] = combined_usage.get(dst_key, 0.0) + float(val)
+                                    break
                         # Details: either nested objects or dot-keys
-                        prompt_details = parsed.get("prompt_tokens_details") if isinstance(parsed.get("prompt_tokens_details"), dict) else {}
-                        completion_details = parsed.get("completion_tokens_details") if isinstance(parsed.get("completion_tokens_details"), dict) else {}
+                        prompt_details = None
+                        for detail_key in ("prompt_tokens_details", "input_tokens_details"):
+                            details_candidate = parsed.get(detail_key)
+                            if isinstance(details_candidate, dict):
+                                prompt_details = details_candidate
+                                break
+                        if prompt_details is None and isinstance(parsed.get("prompt_tokens_details"), dict):
+                            prompt_details = parsed.get("prompt_tokens_details")
+                        if prompt_details is None:
+                            prompt_details = {}
+                        completion_details = None
+                        for detail_key in ("completion_tokens_details", "output_tokens_details"):
+                            details_candidate = parsed.get(detail_key)
+                            if isinstance(details_candidate, dict):
+                                completion_details = details_candidate
+                                break
+                        if completion_details is None and isinstance(parsed.get("completion_tokens_details"), dict):
+                            completion_details = parsed.get("completion_tokens_details")
+                        if completion_details is None:
+                            completion_details = {}
 
                         # Also support flattened keys like "prompt_tokens_details.cached_tokens=123"
                         def _maybe_from_flat(src_key: str) -> Optional[float]:
@@ -1039,8 +1091,19 @@ async def evaluate_single_row(
                         rt = (completion_details or {}).get("reasoning_tokens")
                         if not isinstance(rt, (int, float)):
                             rt = _maybe_from_flat("completion_tokens_details.reasoning_tokens")
+                        if not isinstance(rt, (int, float)):
+                            rt = _maybe_from_flat("output_tokens_details.reasoning_tokens")
                         if isinstance(rt, (int, float)):
                             combined_usage_details["reasoning_tokens"] = combined_usage_details.get("reasoning_tokens", 0.0) + float(rt)
+                            combined_usage_details["explicit_reasoning_tokens"] = combined_usage_details.get("explicit_reasoning_tokens", 0.0) + float(rt)
+
+                        explicit_rt = (completion_details or {}).get("explicit_reasoning_tokens")
+                        if not isinstance(explicit_rt, (int, float)):
+                            explicit_rt = _maybe_from_flat("completion_tokens_details.explicit_reasoning_tokens")
+                        if not isinstance(explicit_rt, (int, float)):
+                            explicit_rt = _maybe_from_flat("output_tokens_details.explicit_reasoning_tokens")
+                        if isinstance(explicit_rt, (int, float)):
+                            combined_usage_details["explicit_reasoning_tokens"] = combined_usage_details.get("explicit_reasoning_tokens", 0.0) + float(explicit_rt)
 
                         cost_val = parsed.get("cost") or parsed.get("total_cost")
                         if isinstance(cost_val, (int, float)):
@@ -1121,6 +1184,7 @@ async def evaluate_single_row(
 
     prompt_tokens = completion_tokens = total_tokens = None
     reasoning_tokens = cached_prompt_tokens = audio_prompt_tokens = None
+    explicit_reasoning_tokens = None
     cost_usd = None
     if combined_usage:
         if "prompt_tokens" in combined_usage:
@@ -1133,14 +1197,28 @@ async def evaluate_single_row(
             cost_usd = float(combined_usage["cost"])
         if "reasoning_tokens" in combined_usage_details:
             reasoning_tokens = int(combined_usage_details["reasoning_tokens"])
+        if "explicit_reasoning_tokens" in combined_usage_details:
+            explicit_reasoning_tokens = int(combined_usage_details["explicit_reasoning_tokens"])
         if "cached_prompt_tokens" in combined_usage_details:
             cached_prompt_tokens = int(combined_usage_details["cached_prompt_tokens"])
         if "audio_prompt_tokens" in combined_usage_details:
             audio_prompt_tokens = int(combined_usage_details["audio_prompt_tokens"])
     elif isinstance(last_usage, dict):
-        prompt_tokens = last_usage.get("prompt_tokens")
-        completion_tokens = last_usage.get("completion_tokens")
-        total_tokens = last_usage.get("total_tokens")
+        def _extract_numeric(source: Dict[str, Any], keys: Tuple[str, ...]) -> Optional[int]:
+            for key in keys:
+                val = source.get(key)
+                if isinstance(val, (int, float)):
+                    return int(val)
+                if isinstance(val, str):
+                    try:
+                        return int(float(val))
+                    except Exception:
+                        continue
+            return None
+
+        prompt_tokens = _extract_numeric(last_usage, ("input_tokens", "prompt_tokens"))
+        completion_tokens = _extract_numeric(last_usage, ("output_tokens", "completion_tokens"))
+        total_tokens = _extract_numeric(last_usage, ("total_tokens",))
         cost_usd = last_usage.get("cost") or last_usage.get("total_cost")
         if isinstance(cost_usd, str):
             try:
@@ -1149,7 +1227,14 @@ async def evaluate_single_row(
                 cost_usd = None
         # Details (single-attempt fallback)
         try:
-            prompt_details_map = last_usage.get("prompt_tokens_details") or {}
+            prompt_details_map = None
+            for detail_key in ("prompt_tokens_details", "input_tokens_details"):
+                details_candidate = last_usage.get(detail_key)
+                if isinstance(details_candidate, dict):
+                    prompt_details_map = details_candidate
+                    break
+            if prompt_details_map is None:
+                prompt_details_map = {}
             if isinstance(prompt_details_map, dict):
                 cached_prompt_tokens = (
                     prompt_details_map.get("cached_tokens") if isinstance(prompt_details_map.get("cached_tokens"), int) else cached_prompt_tokens
@@ -1157,15 +1242,27 @@ async def evaluate_single_row(
                 audio_prompt_tokens = (
                     prompt_details_map.get("audio_tokens") if isinstance(prompt_details_map.get("audio_tokens"), int) else audio_prompt_tokens
                 )
-            completion_details_map = last_usage.get("completion_tokens_details") or {}
+            completion_details_map = None
+            for detail_key in ("completion_tokens_details", "output_tokens_details"):
+                details_candidate = last_usage.get(detail_key)
+                if isinstance(details_candidate, dict):
+                    completion_details_map = details_candidate
+                    break
+            if completion_details_map is None:
+                completion_details_map = {}
             if isinstance(completion_details_map, dict):
                 reasoning_tokens = (
                     completion_details_map.get("reasoning_tokens")
                     if isinstance(completion_details_map.get("reasoning_tokens"), int)
                     else reasoning_tokens
                 )
+                if isinstance(completion_details_map.get("explicit_reasoning_tokens"), int):
+                    explicit_reasoning_tokens = completion_details_map.get("explicit_reasoning_tokens")
         except Exception:
             pass
+
+    if explicit_reasoning_tokens is None and completion_tokens is not None:
+        explicit_reasoning_tokens = completion_tokens
 
     record = RowRecord(
         id=row.get("id"),
@@ -1185,6 +1282,7 @@ async def evaluate_single_row(
         completion_tokens=completion_tokens,
         total_tokens=total_tokens,
         reasoning_tokens=reasoning_tokens,
+        explicit_reasoning_tokens=explicit_reasoning_tokens,
         cached_prompt_tokens=cached_prompt_tokens,
         audio_prompt_tokens=audio_prompt_tokens,
         cost_usd=cost_usd,
@@ -1318,6 +1416,7 @@ async def evaluate_rows_async(
             completion_tokens=record.completion_tokens if record is not None else None,
             total_tokens=record.total_tokens if record is not None else None,
             reasoning_tokens=getattr(record, "reasoning_tokens", None) if record is not None else None,
+            explicit_reasoning_tokens=getattr(record, "explicit_reasoning_tokens", None) if record is not None else None,
             cached_prompt_tokens=getattr(record, "cached_prompt_tokens", None) if record is not None else None,
             audio_prompt_tokens=getattr(record, "audio_prompt_tokens", None) if record is not None else None,
             cost_usd_known=record.cost_usd if record is not None else None,
@@ -1744,14 +1843,20 @@ def main():
         median_latency = None
 
     total_tokens_series = pd.Series(dtype="int64")
+    prompt_tokens_series = pd.Series(dtype="int64")
     completion_tokens_series = pd.Series(dtype="int64")
     if len(results_df.columns) > 0 and not answered_mask.empty:
         total_tokens_series = results_df.loc[answered_mask, "total_tokens"].dropna().astype(int)
+        if "prompt_tokens" in results_df.columns:
+            prompt_tokens_series = results_df.loc[answered_mask, "prompt_tokens"].dropna().astype(int)
         if "completion_tokens" in results_df.columns:
             completion_tokens_series = (
                 results_df.loc[answered_mask, "completion_tokens"].dropna().astype(int)
             )
         mean_tokens = float(total_tokens_series.mean()) if not total_tokens_series.empty else None
+        mean_prompt_tokens = (
+            float(prompt_tokens_series.mean()) if not prompt_tokens_series.empty else None
+        )
         mean_completion_tokens = (
             float(completion_tokens_series.mean()) if not completion_tokens_series.empty else None
         )
@@ -1763,6 +1868,12 @@ def main():
             )
         else:
             reasoning_tokens_series = pd.Series(dtype="int64")
+        if "explicit_reasoning_tokens" in results_df.columns:
+            explicit_reasoning_tokens_series = (
+                results_df.loc[answered_mask, "explicit_reasoning_tokens"].dropna().astype(int)
+            )
+        else:
+            explicit_reasoning_tokens_series = pd.Series(dtype="int64")
         mean_reasoning_tokens = (
             float(reasoning_tokens_series.mean()) if not reasoning_tokens_series.empty else None
         )
@@ -1770,15 +1881,32 @@ def main():
             int(reasoning_tokens_series.sum()) if not reasoning_tokens_series.empty else None
         )
         reasoning_tokens_known_count = int(len(reasoning_tokens_series))
+        mean_explicit_reasoning_tokens = (
+            float(explicit_reasoning_tokens_series.mean()) if not explicit_reasoning_tokens_series.empty else None
+        )
+        total_explicit_reasoning_tokens = (
+            int(explicit_reasoning_tokens_series.sum()) if not explicit_reasoning_tokens_series.empty else None
+        )
+        explicit_reasoning_tokens_known_count = int(len(explicit_reasoning_tokens_series))
         unknown_usage_count = int(answered_count - len(total_tokens_series))
     else:
         mean_tokens = None
+        mean_prompt_tokens = None
         mean_completion_tokens = None
         total_cost = 0.0
         unknown_usage_count = 0
         mean_reasoning_tokens = None
         total_reasoning_tokens = None
         reasoning_tokens_known_count = 0
+        mean_explicit_reasoning_tokens = None
+        total_explicit_reasoning_tokens = None
+        explicit_reasoning_tokens_known_count = 0
+
+    total_prompt_tokens_value = int(prompt_tokens_series.sum()) if not prompt_tokens_series.empty else None
+    total_completion_tokens_value = int(completion_tokens_series.sum()) if not completion_tokens_series.empty else None
+    total_total_tokens_value = int(total_tokens_series.sum()) if not total_tokens_series.empty else None
+    prompt_tokens_known = int(len(prompt_tokens_series))
+    completion_tokens_known = int(len(completion_tokens_series))
 
     def breakdown_by(col: str) -> Dict[str, Any]:
         result: Dict[str, Any] = {}
@@ -1828,15 +1956,22 @@ def main():
         "total_points_earned": total_points_earned,
         "mean_latency_ms": mean_latency,
         "median_latency_ms": median_latency,
-    "mean_total_tokens": mean_tokens,
-    "mean_completion_tokens": mean_completion_tokens,
+        "mean_total_tokens": mean_tokens,
+        "mean_prompt_tokens": mean_prompt_tokens,
+        "mean_completion_tokens": mean_completion_tokens,
         "mean_reasoning_tokens": mean_reasoning_tokens,
         "total_reasoning_tokens": total_reasoning_tokens,
         "reasoning_tokens_known_count": reasoning_tokens_known_count,
+        "mean_explicit_reasoning_tokens": mean_explicit_reasoning_tokens,
+        "total_explicit_reasoning_tokens": total_explicit_reasoning_tokens,
+        "explicit_reasoning_tokens_known_count": explicit_reasoning_tokens_known_count,
+        "total_prompt_tokens": total_prompt_tokens_value,
+        "total_completion_tokens": total_completion_tokens_value,
+        "total_tokens_sum": total_total_tokens_value,
         "total_cost_usd_known": total_cost,
         "unknown_usage_count": unknown_usage_count,
-    "warning_row_count": int(warning_row_count),
-    "warning_counts": warning_counts,
+        "warning_row_count": int(warning_row_count),
+        "warning_counts": warning_counts,
         "breakdown_by_group": breakdown_by("group"),
         "breakdown_by_year": breakdown_by("year"),
         "text_only_evaluation": bool(cli_text_only or (not model_info.supports_vision)),
@@ -1887,13 +2022,27 @@ def main():
     else:
         print("  Mean latency: n/a")
     total_tokens_known = int(len(total_tokens_series))
-    if mean_tokens is not None:
+    if mean_tokens is not None and total_total_tokens_value is not None:
         print(
             "  Total tokens: "
-            f"mean {mean_tokens:.1f}, total {int(total_tokens_series.sum()) if total_tokens_series.size else 0} (rows {total_tokens_known})"
+            f"mean {mean_tokens:.1f}, total {total_total_tokens_value} (rows {total_tokens_known})"
         )
     else:
         print("  Total tokens: n/a")
+    if mean_prompt_tokens is not None and total_prompt_tokens_value is not None:
+        print(
+            "  Input tokens: "
+            f"mean {mean_prompt_tokens:.1f}, total {total_prompt_tokens_value} (rows {prompt_tokens_known})"
+        )
+    else:
+        print("  Input tokens: n/a")
+    if mean_completion_tokens is not None and total_completion_tokens_value is not None:
+        print(
+            "  Output tokens: "
+            f"mean {mean_completion_tokens:.1f}, total {total_completion_tokens_value} (rows {completion_tokens_known})"
+        )
+    else:
+        print("  Output tokens: n/a")
     if total_reasoning_tokens is not None and mean_reasoning_tokens is not None:
         print(
             "  Reasoning tokens: "
@@ -1901,6 +2050,16 @@ def main():
         )
     else:
         print("  Reasoning tokens: n/a")
+    if (
+        total_explicit_reasoning_tokens is not None
+        and mean_explicit_reasoning_tokens is not None
+    ):
+        print(
+            "  Explicit reasoning tokens: "
+            f"mean {mean_explicit_reasoning_tokens:.1f}, total {total_explicit_reasoning_tokens} (rows {explicit_reasoning_tokens_known_count})"
+        )
+    else:
+        print("  Explicit reasoning tokens: n/a")
     print(f"  Known total cost: ${total_cost:.4f}")
     print(f"  Unknown usage rows: {unknown_usage_count}")
     print(f"  Rows with warnings: {warning_row_count}")

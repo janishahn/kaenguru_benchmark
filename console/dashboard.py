@@ -226,9 +226,13 @@ class Dashboard:
             Text(f"Prompt: {snapshot.prompt_tokens_total:,}", style="cyan"),
             Text(f"Completion: {snapshot.completion_tokens_total:,}", style="cyan"),
         )
+        explicit_reasoning_total = snapshot.explicit_reasoning_tokens_total
+        reasoning_label = f"Reasoning: {snapshot.reasoning_tokens_total:,}"
+        if explicit_reasoning_total:
+            reasoning_label += f" (explicit {explicit_reasoning_total:,})"
         table.add_row(
             Text(f"Total: {snapshot.total_tokens_total:,}", style="bold cyan"),
-            Text(f"Reasoning: {snapshot.reasoning_tokens_total:,}", style="cyan"),
+            Text(reasoning_label, style="cyan"),
         )
         table.add_row(
             Text(f"Cached: {snapshot.cached_prompt_tokens_total:,}", style="cyan"),
@@ -283,13 +287,20 @@ class Dashboard:
         for item in list(snapshot.recent_items)[: self.recent_rows]:
             cost_val = item.cost_usd_known if item.cost_usd_known is not None else item.cost_usd_calc
             cost_s = f"${cost_val:.3f}" if cost_val is not None else "--"
+            if item.reasoning_tokens is not None:
+                if item.explicit_reasoning_tokens is not None:
+                    reasoning_s = f"{item.reasoning_tokens}/{item.explicit_reasoning_tokens}"
+                else:
+                    reasoning_s = f"{item.reasoning_tokens}"
+            else:
+                reasoning_s = "--"
             table.add_row(
                 str(item.row_id or "--"),
                 f"{int(item.latency_ms)}" if item.latency_ms is not None else "--",
                 f"{item.prompt_tokens}" if item.prompt_tokens is not None else "--",
                 f"{item.completion_tokens}" if item.completion_tokens is not None else "--",
                 f"{item.total_tokens}" if item.total_tokens is not None else "--",
-                f"{item.reasoning_tokens}" if item.reasoning_tokens is not None else "--",
+                reasoning_s,
                 cost_s,
                 item.predicted or "--",
                 "✓" if item.correct else ("×" if item.correct is False else ""),

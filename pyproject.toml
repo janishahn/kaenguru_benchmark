@@ -1,7 +1,7 @@
 [project]
 name = "kaenguru-benchmark"
 version = "0.1.0"
-description = "Add your description here"
+description = "Evaluation runner and dashboard for the German Kangaroo benchmark"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [

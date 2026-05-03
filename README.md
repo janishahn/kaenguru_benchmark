@@ -4,7 +4,8 @@ Känguru Benchmark – LLM Evaluation
 Quickstart (uses uv for environment management)
 
 - Requirements: Python 3.11+, `uv` installed, OpenRouter API key.
-- For NeurIPS 2026 Evaluations & Datasets packaging notes, see `SUBMISSION_READINESS.md`.
+- This repository contains the evaluation runner, dashboard, dataset checker, and retry tooling used for the German Kangaroo benchmark.
+- Code is released under the MIT License. The benchmark dataset is a separate artifact and uses its own dataset license.
 
 Setup
 
@@ -12,7 +13,63 @@ Setup
   - `uv sync`
 - Set env var:
   - `export OPENROUTER_API_KEY=...`
-  - Alternatively, place the key in a local `.env` file (e.g. `OPENROUTER_API_KEY=sk-...`); the script auto-loads it.
+  - Alternatively, place the key in a local `.env` file; the script auto-loads it.
+
+Artifact Contents
+
+- `eval_run.py`: main model-evaluation runner.
+- `check_dataset.py`: schema and data sanity checker for the benchmark Parquet file.
+- `tools/retry_missing_answers.py`: retry utility for incomplete result files.
+- `dashboard.py`, `dashboard/`, `web/`: local dashboard for inspecting runs and comparing model/human results.
+- `score_utils.py`: shared Kangaroo scoring logic.
+- `tests/`: regression tests for scoring, evaluation, retry, and dashboard data handling.
+- `models.json`: editable model registry for provider/model metadata.
+
+Reproducing the Paper Runs
+
+The paper results were produced from the released benchmark Parquet file. Replace
+`/abs/path/to/full.parquet` below with the downloaded dataset artifact path.
+
+1. Install the environment:
+
+   ```bash
+   uv sync
+   ```
+
+2. Validate the dataset file:
+
+   ```bash
+   uv run python check_dataset.py --dataset /abs/path/to/full.parquet
+   ```
+
+3. Run a full multimodal evaluation for a model:
+
+   ```bash
+   uv run python eval_run.py --dataset /abs/path/to/full.parquet --model openai/gpt-5
+   ```
+
+4. Run the text-only diagnostic slice:
+
+   ```bash
+   uv run python eval_run.py --dataset /abs/path/to/full.parquet --model openai/gpt-5 --text-only
+   ```
+
+5. Inspect generated runs in the dashboard:
+
+   ```bash
+   uv run python dashboard.py --host 127.0.0.1 --port 8000
+   ```
+
+6. Run the automated tests:
+
+   ```bash
+   uv run pytest
+   ```
+
+The runner writes each evaluation under `runs/{timestamp}_{model}/`, including
+per-question results, aggregate metrics, configuration, failures, and raw model
+responses. The main paper tables and plots are computed from these run outputs
+using the dashboard aggregation code and the included analysis notebooks.
 
 Input Data
 

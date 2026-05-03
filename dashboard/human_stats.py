@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections import Counter, defaultdict
-from typing import Dict, Iterable, List, Literal, Optional, Sequence, Tuple
+from typing import Dict, List, Literal, Optional, Sequence, Tuple
 
 from . import schemas
 from .human_compare import compute_run_human_comparison
@@ -84,8 +84,12 @@ def compute_human_baseline_summary(
     best_year: Optional[schemas.HumanComparisonBestYear] = None
     best_grade: Optional[schemas.HumanComparisonBestGrade] = None
 
-    year_totals: Dict[int, Dict[str, float]] = defaultdict(lambda: {"score_sum": 0.0, "weight": 0.0})
-    grade_totals: Dict[str, Dict[str, float]] = defaultdict(lambda: {"score_sum": 0.0, "weight": 0.0, "label": ""})
+    year_totals: Dict[int, Dict[str, float]] = defaultdict(
+        lambda: {"score_sum": 0.0, "weight": 0.0}
+    )
+    grade_totals: Dict[str, Dict[str, float]] = defaultdict(
+        lambda: {"score_sum": 0.0, "weight": 0.0, "label": ""}
+    )
 
     for year in humans.available_years():
         try:
@@ -158,27 +162,31 @@ def _summarize_entries(
     gap_pct_sum = 0.0
     gap_weight = 0.0
 
-    year_stats: Dict[int, Dict[str, float]] = defaultdict(lambda: {
-        "percentile_sum": 0.0,
-        "percentile_weight": 0.0,
-        "gap_sum": 0.0,
-        "gap_weight": 0.0,
-        "score_sum": 0.0,
-        "score_weight": 0.0,
-        "llm_pct_sum": 0.0,
-        "llm_pct_weight": 0.0,
-    })
-    grade_stats: Dict[str, Dict[str, float]] = defaultdict(lambda: {
-        "percentile_sum": 0.0,
-        "percentile_weight": 0.0,
-        "gap_sum": 0.0,
-        "gap_weight": 0.0,
-        "score_sum": 0.0,
-        "score_weight": 0.0,
-        "llm_pct_sum": 0.0,
-        "llm_pct_weight": 0.0,
-        "label": "",
-    })
+    year_stats: Dict[int, Dict[str, float]] = defaultdict(
+        lambda: {
+            "percentile_sum": 0.0,
+            "percentile_weight": 0.0,
+            "gap_sum": 0.0,
+            "gap_weight": 0.0,
+            "score_sum": 0.0,
+            "score_weight": 0.0,
+            "llm_pct_sum": 0.0,
+            "llm_pct_weight": 0.0,
+        }
+    )
+    grade_stats: Dict[str, Dict[str, float]] = defaultdict(
+        lambda: {
+            "percentile_sum": 0.0,
+            "percentile_weight": 0.0,
+            "gap_sum": 0.0,
+            "gap_weight": 0.0,
+            "score_sum": 0.0,
+            "score_weight": 0.0,
+            "llm_pct_sum": 0.0,
+            "llm_pct_weight": 0.0,
+            "label": "",
+        }
+    )
 
     llm_positive_cells: List[schemas.HumanComparisonTopCell] = []
     human_positive_cells: List[schemas.HumanComparisonTopCell] = []
@@ -196,7 +204,9 @@ def _summarize_entries(
         if llm_score_pct is not None and human_score_pct is not None:
             gap_pct = llm_score_pct - human_score_pct
 
-        weight = _weight_for_entry(run_id, entry, weight_mode, run_cell_counts, run_weight)
+        weight = _weight_for_entry(
+            run_id, entry, weight_mode, run_cell_counts, run_weight
+        )
 
         percentile = entry.human_percentile
         if percentile is not None:
@@ -267,13 +277,15 @@ def _summarize_entries(
 
         total_cells += 1
 
-    llm_positive_cells.sort(key=lambda cell: (cell.gap_score_pct or 0.0), reverse=True)
-    human_positive_cells.sort(key=lambda cell: (cell.gap_score_pct or 0.0))
+    llm_positive_cells.sort(key=lambda cell: cell.gap_score_pct or 0.0, reverse=True)
+    human_positive_cells.sort(key=lambda cell: cell.gap_score_pct or 0.0)
 
     top_llm = llm_positive_cells[:top_limit]
     top_human = human_positive_cells[:top_limit]
 
-    avg_percentile = (percentile_sum / percentile_weight) if percentile_weight > 0 else None
+    avg_percentile = (
+        (percentile_sum / percentile_weight) if percentile_weight > 0 else None
+    )
     avg_z = (z_sum / z_weight) if z_weight > 0 else None
     avg_gap_pct = (gap_pct_sum / gap_weight) if gap_weight > 0 else None
 
@@ -361,10 +373,11 @@ def _resolve_best_year(
         gap_weight = data["gap_weight"]
         percentile_avg = (data["percentile_sum"] / weight) if weight > 0 else None
         gap_avg = (data["gap_sum"] / gap_weight) if gap_weight > 0 else None
-        score_weight = data["score_weight"]
-        score_avg = (data["score_sum"] / score_weight) if score_weight > 0 else None
-
-        metric = percentile_avg if percentile_avg is not None else (gap_avg if gap_avg is not None else -float("inf"))
+        metric = (
+            percentile_avg
+            if percentile_avg is not None
+            else (gap_avg if gap_avg is not None else -float("inf"))
+        )
         if percentile_avg is None and gap_avg is None:
             continue
         if best_entry is None or metric > best_entry[1]:
@@ -397,9 +410,11 @@ def _resolve_best_grade(
         score_weight = data["score_weight"]
         percentile_avg = (data["percentile_sum"] / weight) if weight > 0 else None
         gap_avg = (data["gap_sum"] / gap_weight) if gap_weight > 0 else None
-        score_avg = (data["score_sum"] / score_weight) if score_weight > 0 else None
-
-        metric = percentile_avg if percentile_avg is not None else (gap_avg if gap_avg is not None else -float("inf"))
+        metric = (
+            percentile_avg
+            if percentile_avg is not None
+            else (gap_avg if gap_avg is not None else -float("inf"))
+        )
         if percentile_avg is None and gap_avg is None:
             continue
         if best_entry is None or metric > best_entry[1]:

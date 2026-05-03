@@ -189,7 +189,11 @@ def create_app(
             "run_count": len(runs),
             "total_runs": total_runs,
         }
-        template_name = "partials/overview_section.html" if request.headers.get("HX-Request") else "overview.html"
+        template_name = (
+            "partials/overview_section.html"
+            if request.headers.get("HX-Request")
+            else "overview.html"
+        )
         return templates.TemplateResponse(template_name, context)
 
     @app.get("/runs/{run_id}", response_class=HTMLResponse)
@@ -204,7 +208,9 @@ def create_app(
         )
 
     @app.get("/compare", response_class=HTMLResponse)
-    async def compare(request: Request, run_a: Optional[str] = None, run_b: Optional[str] = None) -> HTMLResponse:
+    async def compare(
+        request: Request, run_a: Optional[str] = None, run_b: Optional[str] = None
+    ) -> HTMLResponse:
         runs = index.list_runs()
         context = {"request": request, "runs": runs, "run_a": run_a, "run_b": run_b}
         if run_a and run_b:
@@ -218,7 +224,9 @@ def create_app(
     @app.get("/analysis", response_class=HTMLResponse)
     async def analysis_page(request: Request) -> HTMLResponse:
         runs = index.list_runs()
-        return templates.TemplateResponse("analysis.html", {"request": request, "runs": runs})
+        return templates.TemplateResponse(
+            "analysis.html", {"request": request, "runs": runs}
+        )
 
     @app.get("/humans", response_class=HTMLResponse)
     async def humans_page(request: Request) -> HTMLResponse:
@@ -254,7 +262,9 @@ def create_app(
 
         scatter_data = []
         yearly_agg = defaultdict(lambda: {"human_scores": [], "llm_scores": []})
-        tag_agg = defaultdict(lambda: {"human_scores": [], "llm_scores": [], "count": 0})
+        tag_agg = defaultdict(
+            lambda: {"human_scores": [], "llm_scores": [], "count": 0}
+        )
 
         for record in question_analysis:
             dataset_row = dataset_accessor.get_row(dataset_path, record.question_id)
@@ -276,7 +286,7 @@ def create_app(
                 year = dataset_row.year
                 yearly_agg[year]["human_scores"].append(human_p_correct)
                 yearly_agg[year]["llm_scores"].append(record.avg_llm_score)
-            
+
             if dataset_row and dataset_row.tags:
                 for tag in dataset_row.tags:
                     tag_agg[tag]["count"] += 1
@@ -286,9 +296,13 @@ def create_app(
 
         bar_data = []
         for year, data in yearly_agg.items():
-            avg_human_score = np.mean(data["human_scores"]) if data["human_scores"] else 0
+            avg_human_score = (
+                np.mean(data["human_scores"]) if data["human_scores"] else 0
+            )
             avg_llm_score = np.mean(data["llm_scores"]) if data["llm_scores"] else 0
-            normalized_human_score = avg_human_score / avg_llm_score if avg_llm_score > 0 else 0
+            normalized_human_score = (
+                avg_human_score / avg_llm_score if avg_llm_score > 0 else 0
+            )
             bar_data.append(
                 {
                     "year": year,
@@ -300,7 +314,9 @@ def create_app(
 
         tag_data = []
         for tag, data in tag_agg.items():
-            avg_human_score = np.mean(data["human_scores"]) if data["human_scores"] else 0
+            avg_human_score = (
+                np.mean(data["human_scores"]) if data["human_scores"] else 0
+            )
             avg_llm_score = np.mean(data["llm_scores"]) if data["llm_scores"] else 0
             tag_data.append(
                 {
@@ -311,7 +327,11 @@ def create_app(
                 }
             )
 
-        return {"scatter": scatter_data, "bars": sorted(bar_data, key=lambda x: x["year"]), "tags": sorted(tag_data, key=lambda x: x["tag"])}
+        return {
+            "scatter": scatter_data,
+            "bars": sorted(bar_data, key=lambda x: x["year"]),
+            "tags": sorted(tag_data, key=lambda x: x["tag"]),
+        }
 
     @app.get("/api/runs", response_model=schemas.RunListResponse)
     async def api_list_runs(request: Request) -> schemas.RunListResponse:
@@ -337,10 +357,14 @@ def create_app(
             raise HTTPException(status_code=404, detail=str(exc))
 
     @app.get("/api/humans/{year}/cdf", response_model=schemas.HumanCDFResponse)
-    async def api_human_cdf(year: int, grade: str = Query(..., description="Grade id")) -> schemas.HumanCDFResponse:
+    async def api_human_cdf(
+        year: int, grade: str = Query(..., description="Grade id")
+    ) -> schemas.HumanCDFResponse:
         response = humans.cdf_response(year, grade)
         if response is None:
-            raise HTTPException(status_code=404, detail="Human baseline not found for requested grade")
+            raise HTTPException(
+                status_code=404, detail="Human baseline not found for requested grade"
+            )
         return response
 
     @app.get("/api/humans/percentile", response_model=schemas.HumanPercentileResponse)
@@ -351,7 +375,9 @@ def create_app(
     ) -> schemas.HumanPercentileResponse:
         response = humans.percentile_response(year, grade, score)
         if response is None:
-            raise HTTPException(status_code=404, detail="Human baseline not found for requested grade")
+            raise HTTPException(
+                status_code=404, detail="Human baseline not found for requested grade"
+            )
         return response
 
     @app.get(
@@ -359,11 +385,12 @@ def create_app(
         response_model=schemas.HumanRunComparisonResponse,
     )
     async def api_human_compare_run(
-        run_id: str, 
-        late_year_strategy: str = "best"
+        run_id: str, late_year_strategy: str = "best"
     ) -> schemas.HumanRunComparisonResponse:
         try:
-            return compute_run_human_comparison(run_id, index, humans, late_year_strategy=late_year_strategy)
+            return compute_run_human_comparison(
+                run_id, index, humans, late_year_strategy=late_year_strategy
+            )
         except RunNotFoundError as exc:
             raise HTTPException(status_code=404, detail=str(exc))
 
@@ -406,7 +433,7 @@ def create_app(
         response_model=schemas.HumanCohortComparisonResponse,
     )
     async def api_human_compare_cohort(
-        run_ids: List[str] = Body(..., embed=True, description="Run ids to aggregate")
+        run_ids: List[str] = Body(..., embed=True, description="Run ids to aggregate"),
     ) -> schemas.HumanCohortComparisonResponse:
         if not run_ids:
             raise HTTPException(status_code=400, detail="run_ids must not be empty")
@@ -472,19 +499,25 @@ def create_app(
                 try:
                     data[key] = float(value)
                 except ValueError as exc:  # pragma: no cover - FastAPI converts to 422
-                    raise HTTPException(status_code=400, detail=f"Invalid float for {key}") from exc
+                    raise HTTPException(
+                        status_code=400, detail=f"Invalid float for {key}"
+                    ) from exc
             elif key in INT_FIELDS:
                 try:
                     data[key] = int(value)
                 except ValueError as exc:  # pragma: no cover - FastAPI converts to 422
-                    raise HTTPException(status_code=400, detail=f"Invalid integer for {key}") from exc
+                    raise HTTPException(
+                        status_code=400, detail=f"Invalid integer for {key}"
+                    ) from exc
             elif key in BOOL_FIELDS:
                 data[key] = value.lower() in {"1", "true", "yes"}
             else:
                 data[key] = value
         return schemas.ResultFilterParams(**data)
 
-    def filtered_rows(run_id: str, filters: schemas.ResultFilterParams) -> List[schemas.RowRecord]:
+    def filtered_rows(
+        run_id: str, filters: schemas.ResultFilterParams
+    ) -> List[schemas.RowRecord]:
         return [
             row
             for row in index.iter_results(run_id)
@@ -492,7 +525,9 @@ def create_app(
         ]
 
     @app.get("/api/runs/{run_id}/results", response_model=schemas.ResultsPage)
-    async def api_run_results(request: Request, run_id: str, download: Optional[str] = Query(default=None)):
+    async def api_run_results(
+        request: Request, run_id: str, download: Optional[str] = Query(default=None)
+    ):
         filters = parse_filters(request)
         try:
             if download:
@@ -501,7 +536,9 @@ def create_app(
                     payload = [row.model_dump() for row in rows]
                     content = ORJSONResponse(content=payload)
                     filename = f"{run_id}_results.json"
-                    content.headers["Content-Disposition"] = f"attachment; filename={filename}"
+                    content.headers["Content-Disposition"] = (
+                        f"attachment; filename={filename}"
+                    )
                     return content
                 if download == "csv":
                     buffer = io.StringIO()
@@ -511,9 +548,15 @@ def create_app(
                     for row in rows:
                         writer.writerow(row.model_dump())
                     csv_bytes = buffer.getvalue().encode("utf-8")
-                    headers = {"Content-Disposition": f"attachment; filename={run_id}_results.csv"}
-                    return Response(content=csv_bytes, media_type="text/csv", headers=headers)
-                raise HTTPException(status_code=400, detail="Unsupported download format")
+                    headers = {
+                        "Content-Disposition": f"attachment; filename={run_id}_results.csv"
+                    }
+                    return Response(
+                        content=csv_bytes, media_type="text/csv", headers=headers
+                    )
+                raise HTTPException(
+                    status_code=400, detail="Unsupported download format"
+                )
             page = index.load_results_page(run_id, filters)
             return page
         except (RunNotFoundError, FileNotFoundError) as exc:
@@ -534,7 +577,9 @@ def create_app(
         except (RunNotFoundError, FileNotFoundError) as exc:
             raise HTTPException(status_code=404, detail=str(exc))
 
-    @app.get("/api/runs/{run_id}/row/{row_id}", response_model=schemas.RowDetailResponse)
+    @app.get(
+        "/api/runs/{run_id}/row/{row_id}", response_model=schemas.RowDetailResponse
+    )
     async def api_row_detail(run_id: str, row_id: str):
         try:
             record = index.get_run(run_id)
@@ -557,9 +602,13 @@ def create_app(
     async def api_compare(
         run_a: str = Query(..., description="Baseline run id"),
         run_b: str = Query(..., description="Run id to compare"),
-        view: str = Query("all", description="Filter row deltas: all|changed|improved|regressed"),
+        view: str = Query(
+            "all", description="Filter row deltas: all|changed|improved|regressed"
+        ),
         limit: Optional[int] = Query(None, ge=1, le=2000),
-        include_confusion: bool = Query(False, description="Include confusion matrices for both runs"),
+        include_confusion: bool = Query(
+            False, description="Include confusion matrices for both runs"
+        ),
     ):
         try:
             compare_payload = index.compare_runs(run_a, run_b)
@@ -577,9 +626,16 @@ def create_app(
             compare_payload.confusion_matrices = {}
         return compare_payload
 
-    def filter_row_deltas(rows: List[schemas.CompareRowDelta], view: str) -> List[schemas.CompareRowDelta]:
+    def filter_row_deltas(
+        rows: List[schemas.CompareRowDelta], view: str
+    ) -> List[schemas.CompareRowDelta]:
         if view == "changed":
-            return [r for r in rows if r.run_a_correct != r.run_b_correct or r.run_a_predicted != r.run_b_predicted]
+            return [
+                r
+                for r in rows
+                if r.run_a_correct != r.run_b_correct
+                or r.run_a_predicted != r.run_b_predicted
+            ]
         if view == "improved":
             return [
                 r

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import math
 import statistics
 from collections import defaultdict
 from dataclasses import dataclass
@@ -56,7 +55,9 @@ def compute_run_human_comparison(
         if grade_id is None:
             # Try range-based aggregation for 2007+ years
             if year >= 2007 and _is_range_group(row.group):
-                grade_id = _resolve_range_group(human_year, row.group, late_year_strategy)
+                grade_id = _resolve_range_group(
+                    human_year, row.group, late_year_strategy
+                )
                 if grade_id is None:
                     notes.append(
                         f"Row {row.id} skipped: group '{row.group}' not mapped to human grade for {year}"
@@ -94,7 +95,9 @@ def compute_run_human_comparison(
             continue
         # Handle synthetic grade IDs that represent aggregated groups
         if grade_id.startswith("_range_aggregated_"):
-            grade_stats = _get_aggregated_grade_stats(human_year, grade_id, late_year_strategy)
+            grade_stats = _get_aggregated_grade_stats(
+                human_year, grade_id, late_year_strategy
+            )
             if grade_stats is None:
                 notes.append("Failed to aggregate grade stats for range group")
                 continue
@@ -120,7 +123,9 @@ def compute_run_human_comparison(
         bin_comparison = _build_bin_comparison(human_year, grade_stats, llm_total)
 
         member_overrides: Dict[str, schemas.HumanMemberComparison] = {}
-        member_grade_ids = _member_grade_ids_for_stats(human_year, grade_stats, grade_id)
+        member_grade_ids = _member_grade_ids_for_stats(
+            human_year, grade_stats, grade_id
+        )
         for member_grade_id in member_grade_ids:
             try:
                 member_grade = human_year.grade(member_grade_id)
@@ -128,7 +133,9 @@ def compute_run_human_comparison(
                 if member_grade_id != grade_id:
                     continue
                 member_grade = grade_stats
-            member_overrides[member_grade_id] = _build_member_override(member_grade, llm_total)
+            member_overrides[member_grade_id] = _build_member_override(
+                member_grade, llm_total
+            )
 
         entries.append(
             schemas.HumanRunGradeComparison(
@@ -155,7 +162,9 @@ def compute_run_human_comparison(
         )
 
     entries.sort(key=lambda entry: (entry.year, entry.grade_id))
-    return schemas.HumanRunComparisonResponse(run_id=run_id, entries=entries, notes=sorted(set(notes)))
+    return schemas.HumanRunComparisonResponse(
+        run_id=run_id, entries=entries, notes=sorted(set(notes))
+    )
 
 
 def compute_cohort_human_comparison(
@@ -176,7 +185,9 @@ def compute_cohort_human_comparison(
         except RunNotFoundError as exc:
             cohort_notes.append(str(exc))
 
-    per_group: Dict[Tuple[int, str], List[Tuple[str, schemas.HumanRunGradeComparison]]] = defaultdict(list)
+    per_group: Dict[
+        Tuple[int, str], List[Tuple[str, schemas.HumanRunGradeComparison]]
+    ] = defaultdict(list)
     for run_id, response in run_responses.items():
         for entry in response.entries:
             per_group[(entry.year, entry.grade_id)].append((run_id, entry))
@@ -184,7 +195,9 @@ def compute_cohort_human_comparison(
     micro_entries: List[schemas.HumanAggregateEntry] = []
     macro_entries: List[schemas.HumanAggregateEntry] = []
 
-    for (year, grade_id), samples in sorted(per_group.items(), key=lambda item: item[0]):
+    for (year, grade_id), samples in sorted(
+        per_group.items(), key=lambda item: item[0]
+    ):
         try:
             human_year = humans.get_year(year)
             grade_stats = human_year.grade(grade_id)
@@ -209,8 +222,12 @@ def compute_cohort_human_comparison(
             )
         )
 
-    micro_stats = schemas.HumanAggregateStats(cohort_type="micro", entries=micro_entries)
-    macro_stats = schemas.HumanAggregateStats(cohort_type="macro", entries=macro_entries)
+    micro_stats = schemas.HumanAggregateStats(
+        cohort_type="micro", entries=micro_entries
+    )
+    macro_stats = schemas.HumanAggregateStats(
+        cohort_type="macro", entries=macro_entries
+    )
 
     return schemas.HumanCohortComparisonResponse(
         run_ids=list(run_responses.keys()),
@@ -321,7 +338,9 @@ def _aggregate_group(
 
     raw_share_matrix: List[List[float]] = []
     smooth_share_matrix: List[List[float]] = []
-    member_samples: Dict[str, List[Tuple[str, schemas.HumanMemberComparison]]] = defaultdict(list)
+    member_samples: Dict[str, List[Tuple[str, schemas.HumanMemberComparison]]] = (
+        defaultdict(list)
+    )
 
     for run_id, entry in samples:
         weight = entry.llm_max if entry.llm_max > 0 else 1.0
@@ -336,20 +355,28 @@ def _aggregate_group(
             score_pcts.append(entry.llm_score_pct)
             score_pcts_weighted.append((entry.llm_score_pct, weight))
         if entry.human_mean is not None and entry.llm_max:
-            human_mean_pct = entry.human_mean / entry.llm_max if entry.llm_max > 0 else None
+            human_mean_pct = (
+                entry.human_mean / entry.llm_max if entry.llm_max > 0 else None
+            )
             if human_mean_pct is not None:
                 human_mean_pcts.append(human_mean_pct)
                 human_mean_pcts_weighted.append((human_mean_pct, weight))
         if entry.human_best is not None and entry.llm_max:
-            human_best_pct = entry.human_best / entry.llm_max if entry.llm_max > 0 else None
+            human_best_pct = (
+                entry.human_best / entry.llm_max if entry.llm_max > 0 else None
+            )
             if human_best_pct is not None:
                 human_best_pcts.append(human_best_pct)
                 human_best_pcts_weighted.append((human_best_pct, weight))
         if entry.z_score is not None:
             z_scores.append(entry.z_score)
             z_scores_weighted.append((entry.z_score, weight))
-        raw_share_matrix.append([bin_entry.llm_share for bin_entry in entry.bin_comparison])
-        smooth_share_matrix.append([bin_entry.llm_share_smoothed for bin_entry in entry.bin_comparison])
+        raw_share_matrix.append(
+            [bin_entry.llm_share for bin_entry in entry.bin_comparison]
+        )
+        smooth_share_matrix.append(
+            [bin_entry.llm_share_smoothed for bin_entry in entry.bin_comparison]
+        )
         if entry.notes:
             notes.extend(entry.notes)
         if entry.member_overrides:
@@ -361,8 +388,12 @@ def _aggregate_group(
 
     avg_score_pct = _average(score_pcts_weighted if use_weights else score_pcts)
     avg_percentile = _average(percentiles_weighted if use_weights else percentiles)
-    avg_human_mean_pct = _average(human_mean_pcts_weighted if use_weights else human_mean_pcts)
-    avg_human_best_pct = _average(human_best_pcts_weighted if use_weights else human_best_pcts)
+    avg_human_mean_pct = _average(
+        human_mean_pcts_weighted if use_weights else human_mean_pcts
+    )
+    avg_human_best_pct = _average(
+        human_best_pcts_weighted if use_weights else human_best_pcts
+    )
     avg_z = _average(z_scores_weighted if use_weights else z_scores)
 
     median_percentile, p25_percentile, p75_percentile = _percentile_stats(percentiles)
@@ -418,7 +449,9 @@ def _aggregate_group(
     )
 
 
-def _average(values: Iterable[float] | Iterable[Tuple[float, float]]) -> Optional[float]:
+def _average(
+    values: Iterable[float] | Iterable[Tuple[float, float]],
+) -> Optional[float]:
     values = list(values)
     if not values:
         return None
@@ -431,7 +464,9 @@ def _average(values: Iterable[float] | Iterable[Tuple[float, float]]) -> Optiona
     return sum(values) / len(values)  # type: ignore[return-value]
 
 
-def _percentile_stats(values: Sequence[float]) -> Tuple[Optional[float], Optional[float], Optional[float]]:
+def _percentile_stats(
+    values: Sequence[float],
+) -> Tuple[Optional[float], Optional[float], Optional[float]]:
     if not values:
         return (None, None, None)
     median = statistics.median(values)
@@ -444,7 +479,9 @@ def _percentile_stats(values: Sequence[float]) -> Tuple[Optional[float], Optiona
     return (median, q1, q3)
 
 
-def _average_matrix(matrix: Sequence[Sequence[float]], weights: Optional[Sequence[float]]) -> List[float]:
+def _average_matrix(
+    matrix: Sequence[Sequence[float]], weights: Optional[Sequence[float]]
+) -> List[float]:
     if not matrix:
         return []
     length = len(matrix[0])
@@ -453,7 +490,8 @@ def _average_matrix(matrix: Sequence[Sequence[float]], weights: Optional[Sequenc
         column = [row[idx] for row in matrix if idx < len(row)]
         if weights is not None and len(weights) == len(matrix) and sum(weights) > 0:
             result.append(
-                sum(value * weight for value, weight in zip(column, weights)) / sum(weights)
+                sum(value * weight for value, weight in zip(column, weights))
+                / sum(weights)
             )
         elif column:
             result.append(sum(column) / len(column))
@@ -479,7 +517,9 @@ def _member_grade_ids_for_stats(
     return member_grade_ids
 
 
-def _build_member_override(grade: HumanGradeStats, score: float) -> schemas.HumanMemberComparison:
+def _build_member_override(
+    grade: HumanGradeStats, score: float
+) -> schemas.HumanMemberComparison:
     return schemas.HumanMemberComparison(
         grade_id=grade.id,
         grade_label=grade.label,
@@ -500,7 +540,9 @@ def _aggregate_member_overrides(
     member_samples: Dict[str, List[Tuple[str, schemas.HumanMemberComparison]]],
 ) -> Dict[str, schemas.HumanMemberComparison]:
     member_overrides: Dict[str, schemas.HumanMemberComparison] = {}
-    member_grade_ids = _member_grade_ids_for_stats(human_year, grade_stats, grade_stats.id)
+    member_grade_ids = _member_grade_ids_for_stats(
+        human_year, grade_stats, grade_stats.id
+    )
     for member_grade_id in member_grade_ids:
         try:
             member_grade = human_year.grade(member_grade_id)
@@ -510,7 +552,9 @@ def _aggregate_member_overrides(
             member_grade = grade_stats
 
         samples = member_samples.get(member_grade_id, [])
-        percentiles = [ov.human_percentile for _, ov in samples if ov.human_percentile is not None]
+        percentiles = [
+            ov.human_percentile for _, ov in samples if ov.human_percentile is not None
+        ]
         z_scores = [ov.z_score for _, ov in samples if ov.z_score is not None]
 
         member_overrides[member_grade_id] = schemas.HumanMemberComparison(
@@ -625,23 +669,23 @@ def _resolve_range_group(
     parts = group_str.split("-")
     if len(parts) != 2:
         return None
-    
+
     try:
         start_grade = int(parts[0])
         end_grade = int(parts[1])
     except ValueError:
         return None
-    
+
     # Find individual grades in this range
     constituent_grades = []
     for grade_id in human_year.grade_ids():
         grade = human_year.grade(grade_id)
         if len(grade.members) == 1 and start_grade <= grade.members[0] <= end_grade:
             constituent_grades.append(grade_id)
-    
+
     if not constituent_grades:
         return None
-    
+
     # Create synthetic grade ID for this aggregation
     synthetic_id = f"_range_aggregated_{group_str}_{strategy}"
     return synthetic_id
@@ -657,40 +701,42 @@ def _get_aggregated_grade_stats(
     parts = synthetic_grade_id.split("_")
     if len(parts) < 5:
         return None
-    
-    range_str = parts[3]  # Extract the range part (e.g., "3-4" from "_range_aggregated_3-4_best")
+
+    range_str = parts[
+        3
+    ]  # Extract the range part (e.g., "3-4" from "_range_aggregated_3-4_best")
     parts2 = range_str.split("-")
     if len(parts2) != 2:
         return None
-    
+
     try:
         start_grade = int(parts2[0])
         end_grade = int(parts2[1])
     except ValueError:
         return None
-    
+
     # Find constituent grades
     constituent_grades = []
     for grade_id in human_year.grade_ids():
         grade = human_year.grade(grade_id)
         if len(grade.members) == 1 and start_grade <= grade.members[0] <= end_grade:
             constituent_grades.append(grade_id)
-    
+
     if not constituent_grades:
         return None
-    
+
     # Aggregate the grades based on strategy
     if strategy == "best":
         # Use grade with best human performance (highest mean)
         best_grade_id = None
         best_mean = -1
-        
+
         for grade_id in constituent_grades:
             grade = human_year.grade(grade_id)
             if grade.mean_estimate and grade.mean_estimate > best_mean:
                 best_mean = grade.mean_estimate
                 best_grade_id = grade_id
-        
+
         if best_grade_id:
             base_grade = human_year.grade(best_grade_id)
             # Modify label to reflect aggregation
@@ -710,7 +756,7 @@ def _get_aggregated_grade_stats(
                 stddev_estimate=base_grade.stddev_estimate,
                 best_score_estimate=base_grade.best_score_estimate,
             )
-    
+
     elif strategy == "average":
         # Aggregate all constituent grades
         aggregated_grade = human_year.aggregate_grades(
@@ -722,5 +768,5 @@ def _get_aggregated_grade_stats(
             aggregated_grade.id = synthetic_grade_id
             aggregated_grade.label = f"{range_str} (avg of {len(constituent_grades)})"
             return aggregated_grade
-    
+
     return None

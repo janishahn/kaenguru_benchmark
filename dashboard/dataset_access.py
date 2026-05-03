@@ -83,7 +83,9 @@ class DatasetAccessor:
             # Log this properly in a real app
             return {}
 
-    def get_row(self, dataset_path: Optional[str], row_id: str) -> Optional[schemas.DatasetRow]:
+    def get_row(
+        self, dataset_path: Optional[str], row_id: str
+    ) -> Optional[schemas.DatasetRow]:
         if not dataset_path:
             return None
         path = self._resolve_dataset_path(dataset_path)
@@ -194,7 +196,9 @@ class DatasetAccessor:
         associated_images: List[str] = []
         assoc_raw = row_data.get("associated_images_bin")
         if assoc_raw:
-            var_iter = assoc_raw if isinstance(assoc_raw, (list, tuple)) else [assoc_raw]
+            var_iter = (
+                assoc_raw if isinstance(assoc_raw, (list, tuple)) else [assoc_raw]
+            )
             for candidate in var_iter:
                 data = _coerce_bytes(candidate)
                 if not data:
@@ -213,12 +217,17 @@ class DatasetAccessor:
             question_image=question_image,
             associated_images=associated_images,
             language=row_data.get("language"),
-            year=str(row_data.get("year")) if row_data.get("year") is not None else None,
-            group=str(row_data.get("group")) if row_data.get("group") is not None else None,
-            points=float(row_data.get("points")) if row_data.get("points") is not None else None,
+            year=str(row_data.get("year"))
+            if row_data.get("year") is not None
+            else None,
+            group=str(row_data.get("group"))
+            if row_data.get("group") is not None
+            else None,
+            points=float(row_data.get("points"))
+            if row_data.get("points") is not None
+            else None,
             human_performance=human_performance,
         )
 
 
 __all__ = ["DatasetAccessor"]
-

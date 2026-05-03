@@ -28,7 +28,13 @@ class SmartEta:
         self._median: Optional[float] = None
 
     # Update ------------------------------------------------------------------
-    def update(self, *, tokens: Optional[int], latency_ms: Optional[float], monotonic_ts: Optional[float]) -> None:
+    def update(
+        self,
+        *,
+        tokens: Optional[int],
+        latency_ms: Optional[float],
+        monotonic_ts: Optional[float],
+    ) -> None:
         if monotonic_ts is not None:
             if self._last_ts is not None:
                 interval = max(monotonic_ts - self._last_ts, 1e-6)
@@ -149,7 +155,11 @@ class SmartEta:
     def _confidence(self, remaining_items: int) -> str:
         if self._samples < 10:
             return "low"
-        if self._samples < 30 or (self._mad is not None and self._median is not None and self._mad > 0.4 * self._median):
+        if self._samples < 30 or (
+            self._mad is not None
+            and self._median is not None
+            and self._mad > 0.4 * self._median
+        ):
             return "medium"
         if remaining_items < 10:
             return "high"

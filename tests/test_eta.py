@@ -2,9 +2,8 @@ from __future__ import annotations
 
 import sys
 from pathlib import Path
-sys.path.append(str(Path(__file__).resolve().parents[1]))
 
-import pytest
+sys.path.append(str(Path(__file__).resolve().parents[1]))
 
 from console.eta import SmartEta
 

@@ -71,7 +71,9 @@ class Dashboard:
             expand=True,
             transient=False,
         )
-        self._task_id = self._progress.add_task("Progress", total=self.aggregator.total_items)
+        self._task_id = self._progress.add_task(
+            "Progress", total=self.aggregator.total_items
+        )
 
         # Reduce minimum sizes to make dashboard more compact
         min_top = 3 if self._compact_mode else 4
@@ -124,7 +126,12 @@ class Dashboard:
 
     # Update -------------------------------------------------------------------
     def update(self, snapshot: DashboardSnapshot) -> None:
-        if self._live is None or self._progress is None or self._task_id is None or self._layout is None:
+        if (
+            self._live is None
+            or self._progress is None
+            or self._task_id is None
+            or self._layout is None
+        ):
             raise RuntimeError("Dashboard.update called before start()")
 
         eta_seconds = snapshot.eta_seconds
@@ -145,28 +152,41 @@ class Dashboard:
             refresh=True,
         )
 
-        self._layout["overview"].update(self._render_overview(snapshot, cost_projection))
+        self._layout["overview"].update(
+            self._render_overview(snapshot, cost_projection)
+        )
         if self._show_cost_panel:
             self._layout["cost"].update(self._render_cost(snapshot))
         if self._show_tokens_panel:
             self._layout["tokens"].update(self._render_tokens(snapshot))
-        self._layout["rates"].update(self._render_rates(snapshot, token_rate, requests_per_second))
+        self._layout["rates"].update(
+            self._render_rates(snapshot, token_rate, requests_per_second)
+        )
         if self._show_recent:
             self._layout["recent"].update(self._render_recent(snapshot))
 
         self._live.refresh()
 
     # Panels -------------------------------------------------------------------
-    def _render_overview(self, snapshot: DashboardSnapshot, cost_projection: Optional[CostProjection]) -> Panel:
+    def _render_overview(
+        self, snapshot: DashboardSnapshot, cost_projection: Optional[CostProjection]
+    ) -> Panel:
         table = Table.grid(expand=True)
-        pct = (snapshot.completed_items / snapshot.total_items * 100.0) if snapshot.total_items else 0.0
-        
+        pct = (
+            (snapshot.completed_items / snapshot.total_items * 100.0)
+            if snapshot.total_items
+            else 0.0
+        )
+
         # Format elapsed time
         elapsed_str = self._format_elapsed_time(snapshot.elapsed_time_seconds)
-        
+
         table.add_row(Text(f"Model: {snapshot.model_id}", style="yellow bold"))
         table.add_row(
-            Text(f"Done {snapshot.completed_items}/{snapshot.total_items} ({pct:.1f}%)", style="bold"),
+            Text(
+                f"Done {snapshot.completed_items}/{snapshot.total_items} ({pct:.1f}%)",
+                style="bold",
+            ),
             Text(f"Elapsed: {elapsed_str}", style="green"),
         )
         table.add_row(
@@ -180,7 +200,9 @@ class Dashboard:
             projected = cost_projection.projected_total
             proj_str = f"${projected:,.2f}" if projected is not None else "n/a"
             table.add_row(
-                Text(f"Known cost: ${cost_projection.known_cost:,.2f}", style="magenta"),
+                Text(
+                    f"Known cost: ${cost_projection.known_cost:,.2f}", style="magenta"
+                ),
                 Text(f"Projected: {proj_str}", style="magenta"),
             )
         if not self._show_tokens_panel:
@@ -212,10 +234,22 @@ class Dashboard:
         if projection and projection.projected_total is not None:
             low = projection.projected_low or projection.projected_total
             high = projection.projected_high or projection.projected_total
-            table.add_row(Text(f"Projected: ${low:,.2f} – ${high:,.2f}", style="magenta"))
+            table.add_row(
+                Text(f"Projected: ${low:,.2f} – ${high:,.2f}", style="magenta")
+            )
             if projection.average_cost_per_item is not None:
-                table.add_row(Text(f"/Q mean: ${projection.average_cost_per_item:.3f}", style="magenta"))
-            table.add_row(Text(f"Samples: {projection.samples} ({projection.confidence})", style="dim"))
+                table.add_row(
+                    Text(
+                        f"/Q mean: ${projection.average_cost_per_item:.3f}",
+                        style="magenta",
+                    )
+                )
+            table.add_row(
+                Text(
+                    f"Samples: {projection.samples} ({projection.confidence})",
+                    style="dim",
+                )
+            )
         else:
             table.add_row(Text("Projection warming up", style="dim"))
         return Panel(table, title="Cost", padding=(0, 1))
@@ -240,7 +274,8 @@ class Dashboard:
                 "p50/p90: "
                 + (
                     f"{int(snapshot.median_tokens_per_item)} / {int(snapshot.p90_tokens_per_item)}"
-                    if snapshot.median_tokens_per_item is not None and snapshot.p90_tokens_per_item is not None
+                    if snapshot.median_tokens_per_item is not None
+                    and snapshot.p90_tokens_per_item is not None
                     else "--"
                 ),
                 style="dim",
@@ -260,16 +295,29 @@ class Dashboard:
         table.add_row(Text(tr, style="green"))
         table.add_row(Text(rr, style="green"))
         if snapshot.min_request_interval:
-            rl = 1.0 / snapshot.min_request_interval if snapshot.min_request_interval > 0 else None
+            rl = (
+                1.0 / snapshot.min_request_interval
+                if snapshot.min_request_interval > 0
+                else None
+            )
             if rl:
-                table.add_row(Text(f"Ceiling: {rl * snapshot.worker_count:.2f} req/s", style="yellow"))
+                table.add_row(
+                    Text(
+                        f"Ceiling: {rl * snapshot.worker_count:.2f} req/s",
+                        style="yellow",
+                    )
+                )
         table.add_row(Text(f"Throttles: {snapshot.throttles}", style="yellow"))
         if snapshot.last_status is not None:
             table.add_row(Text(f"Last status: {snapshot.last_status}", style="dim"))
         if snapshot.mean_latency_ms is not None:
-            table.add_row(Text(f"Mean latency: {snapshot.mean_latency_ms:.0f} ms", style="cyan"))
+            table.add_row(
+                Text(f"Mean latency: {snapshot.mean_latency_ms:.0f} ms", style="cyan")
+            )
         if snapshot.mean_attempts is not None and snapshot.mean_attempts > 1.0:
-            table.add_row(Text(f"Avg attempts: {snapshot.mean_attempts:.2f}", style="cyan"))
+            table.add_row(
+                Text(f"Avg attempts: {snapshot.mean_attempts:.2f}", style="cyan")
+            )
         return Panel(table, title="Rate & Health", padding=(0, 1))
 
     def _render_recent(self, snapshot: DashboardSnapshot) -> Panel:
@@ -285,11 +333,17 @@ class Dashboard:
         table.add_column("ok", justify="center")
 
         for item in list(snapshot.recent_items)[: self.recent_rows]:
-            cost_val = item.cost_usd_known if item.cost_usd_known is not None else item.cost_usd_calc
+            cost_val = (
+                item.cost_usd_known
+                if item.cost_usd_known is not None
+                else item.cost_usd_calc
+            )
             cost_s = f"${cost_val:.3f}" if cost_val is not None else "--"
             if item.reasoning_tokens is not None:
                 if item.explicit_reasoning_tokens is not None:
-                    reasoning_s = f"{item.reasoning_tokens}/{item.explicit_reasoning_tokens}"
+                    reasoning_s = (
+                        f"{item.reasoning_tokens}/{item.explicit_reasoning_tokens}"
+                    )
                 else:
                     reasoning_s = f"{item.reasoning_tokens}"
             else:
@@ -298,7 +352,9 @@ class Dashboard:
                 str(item.row_id or "--"),
                 f"{int(item.latency_ms)}" if item.latency_ms is not None else "--",
                 f"{item.prompt_tokens}" if item.prompt_tokens is not None else "--",
-                f"{item.completion_tokens}" if item.completion_tokens is not None else "--",
+                f"{item.completion_tokens}"
+                if item.completion_tokens is not None
+                else "--",
                 f"{item.total_tokens}" if item.total_tokens is not None else "--",
                 reasoning_s,
                 cost_s,

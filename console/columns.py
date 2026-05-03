@@ -14,7 +14,7 @@ def _format_seconds(seconds: Optional[float]) -> str:
     hours, rem = divmod(seconds, 3600)
     minutes, secs = divmod(rem, 60)
     if hours > 99:
-        return f">99h"
+        return ">99h"
     return f"{hours:02d}:{minutes:02d}:{secs:02d}"
 
 

@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
 import shlex
 import subprocess
 import sys
@@ -11,7 +10,17 @@ import time
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Mapping, MutableMapping, Optional, Sequence, Tuple
+from typing import (
+    Any,
+    Dict,
+    Iterable,
+    List,
+    Mapping,
+    MutableMapping,
+    Optional,
+    Sequence,
+    Tuple,
+)
 
 import pandas as pd
 import shutil
@@ -26,7 +35,12 @@ DEFAULT_DATASET_PATH = Path("datasets") / "dataset_full.edited.corrected.parquet
 REPO_ROOT = Path(__file__).resolve().parents[1]
 QUESTION_ID_CANDIDATES = ("question_id", "id")
 VALID_PREDICTIONS_DEFAULT = {"A", "B", "C", "D", "E", "DECLINED"}
-RETRY_METADATA_COLUMNS = ("retry_run_id", "retry_timestamp", "retry_attempt", "retry_source")
+RETRY_METADATA_COLUMNS = (
+    "retry_run_id",
+    "retry_timestamp",
+    "retry_attempt",
+    "retry_source",
+)
 REPORTS_DIR = Path("reports")
 FILLED_SUFFIX = ".filled"
 TMP_DIR_NAME = ".retry_tmp"
@@ -179,7 +193,9 @@ def discover_default_config(results_path: Path) -> Optional[Path]:
     return None
 
 
-def parse_run_metadata(config: Mapping[str, object]) -> Tuple[Optional[Mapping[str, object]], Optional[str]]:
+def parse_run_metadata(
+    config: Mapping[str, object],
+) -> Tuple[Optional[Mapping[str, object]], Optional[str]]:
     args = config.get("args") if config else None
     args = args if isinstance(args, MutableMapping) else None
     model_id = None
@@ -188,7 +204,11 @@ def parse_run_metadata(config: Mapping[str, object]) -> Tuple[Optional[Mapping[s
     elif isinstance(config.get("model"), MutableMapping):
         model_entry = config["model"]  # type: ignore[assignment]
         if isinstance(model_entry, Mapping):
-            model_id = model_entry.get("id") if isinstance(model_entry.get("id"), str) else None
+            model_id = (
+                model_entry.get("id")
+                if isinstance(model_entry.get("id"), str)
+                else None
+            )
     return args, model_id
 
 
@@ -235,7 +255,13 @@ def build_default_harness_command(
     }
 
     for key, value in config_args.items():
-        if key in {"dataset", "output_dir", "reasoning", "internal_effort", "worker_count"}:
+        if key in {
+            "dataset",
+            "output_dir",
+            "reasoning",
+            "internal_effort",
+            "worker_count",
+        }:
             continue
         if value is None:
             continue
@@ -268,9 +294,10 @@ def run_harness_command(
     stderr_path: Path,
 ) -> None:
     ensure_directory(stdout_path.parent)
-    with stdout_path.open("w", encoding="utf-8") as stdout_file, stderr_path.open(
-        "w", encoding="utf-8"
-    ) as stderr_file:
+    with (
+        stdout_path.open("w", encoding="utf-8") as stdout_file,
+        stderr_path.open("w", encoding="utf-8") as stderr_file,
+    ):
         result = subprocess.run(
             list(command),
             cwd=str(cwd),
@@ -308,7 +335,9 @@ def load_retry_outputs(
     elif json_path.exists():
         retry_df = pd.read_json(json_path)
     else:
-        raise RetryToolError(f"Retry run at {run_dir} did not produce results.parquet or results.json")
+        raise RetryToolError(
+            f"Retry run at {run_dir} did not produce results.parquet or results.json"
+        )
 
     question_column = resolve_question_column(retry_df.columns)
     retry_df = retry_df.copy()
@@ -424,7 +453,9 @@ def write_outputs(
         if path.exists() and not force:
             raise RetryToolError(f"{path} already exists. Use --force to overwrite.")
         records = df.to_dict(orient="records")
-        path.write_text(json.dumps(records, ensure_ascii=False, indent=2), encoding="utf-8")
+        path.write_text(
+            json.dumps(records, ensure_ascii=False, indent=2), encoding="utf-8"
+        )
         outputs["json"] = path
     return outputs
 
@@ -460,29 +491,41 @@ def parse_arguments(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Retry and merge missing predictions in evaluation results."
     )
-    parser.add_argument("--results", required=True, help="Path to results.parquet or results.json")
+    parser.add_argument(
+        "--results", required=True, help="Path to results.parquet or results.json"
+    )
     parser.add_argument(
         "--dataset",
         help=f"Path to base dataset parquet (default: {DEFAULT_DATASET_PATH})",
     )
-    parser.add_argument("--harness-cmd", help="Shell command template for running the harness.")
+    parser.add_argument(
+        "--harness-cmd", help="Shell command template for running the harness."
+    )
     parser.add_argument("--config", help="Path to evaluation config (JSON or YAML).")
-    parser.add_argument("--output-dir", help="Directory for merged outputs (default: run directory).")
+    parser.add_argument(
+        "--output-dir", help="Directory for merged outputs (default: run directory)."
+    )
     parser.add_argument(
         "--format",
         choices=("parquet", "json", "both"),
         default="both",
         help="Output formats to produce (default: both).",
     )
-    parser.add_argument("--dry-run", action="store_true", help="Analyze missing predictions only.")
-    parser.add_argument("--retain-temp", action="store_true", help="Keep generated temp files.")
+    parser.add_argument(
+        "--dry-run", action="store_true", help="Analyze missing predictions only."
+    )
+    parser.add_argument(
+        "--retain-temp", action="store_true", help="Keep generated temp files."
+    )
     parser.add_argument(
         "--valid-answer",
         action="append",
         dest="valid_answers",
         help="Additional valid answers (defaults include A-E and DECLINED).",
     )
-    parser.add_argument("--force", action="store_true", help="Overwrite existing filled outputs.")
+    parser.add_argument(
+        "--force", action="store_true", help="Overwrite existing filled outputs."
+    )
     parser.add_argument(
         "--yes",
         action="store_true",
@@ -504,7 +547,9 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     if args.valid_answers:
         valid_predictions.extend([item.upper() for item in args.valid_answers])
 
-    stats_before = detect_missing_predictions(results_df, valid_predictions=valid_predictions)
+    stats_before = detect_missing_predictions(
+        results_df, valid_predictions=valid_predictions
+    )
     question_column = resolve_question_column(results_df.columns)
 
     print(
@@ -522,7 +567,9 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     if args.dataset:
         dataset_path = Path(args.dataset).expanduser().resolve()
         if not dataset_path.exists():
-            raise RetryToolError(f"Provided dataset path does not exist: {dataset_path}")
+            raise RetryToolError(
+                f"Provided dataset path does not exist: {dataset_path}"
+            )
     else:
         candidate_paths = [
             REPO_ROOT / DEFAULT_DATASET_PATH,
@@ -537,9 +584,15 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             )
     dataset_df = load_dataset(dataset_path)
 
-    subset = build_subset_dataset(dataset_df, question_column, stats_before.question_ids)
+    subset = build_subset_dataset(
+        dataset_df, question_column, stats_before.question_ids
+    )
 
-    run_dir = results_path.parent if not args.output_dir else Path(args.output_dir).expanduser().resolve()
+    run_dir = (
+        results_path.parent
+        if not args.output_dir
+        else Path(args.output_dir).expanduser().resolve()
+    )
     if not run_dir.exists():
         ensure_directory(run_dir)
 
@@ -573,7 +626,11 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     if not args.yes:
         prompt_confirmation(len(subset))
 
-    config_path = Path(args.config).expanduser().resolve() if args.config else discover_default_config(results_path)
+    config_path = (
+        Path(args.config).expanduser().resolve()
+        if args.config
+        else discover_default_config(results_path)
+    )
     config = load_run_config(config_path) if config_path else {}
     config_args, model_id = parse_run_metadata(config)
     command: List[str]
@@ -607,13 +664,17 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     stderr_log = temp_dir / "harness_stderr.log"
     printable = " ".join(shlex.quote(token) for token in command)
     print(f"Running harness command: {printable}")
-    run_harness_command(command, cwd=REPO_ROOT, stdout_path=stdout_log, stderr_path=stderr_log)
+    run_harness_command(
+        command, cwd=REPO_ROOT, stdout_path=stdout_log, stderr_path=stderr_log
+    )
 
     retry_run_dir = locate_retry_run_dir(output_base, before_dirs)
     print(f"Retry outputs located at {retry_run_dir}")
 
     retry_df, retry_issues = load_retry_outputs(
-        retry_run_dir, expected_ids=stats_before.question_ids, valid_predictions=valid_predictions
+        retry_run_dir,
+        expected_ids=stats_before.question_ids,
+        valid_predictions=valid_predictions,
     )
     merged_df, unresolved = merge_results(
         results_df,
@@ -645,7 +706,9 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         runtime_seconds=time.perf_counter() - start_time,
         results_path=results_path,
     )
-    print(f"Merged outputs written: {', '.join(str(path) for path in outputs.values())}")
+    print(
+        f"Merged outputs written: {', '.join(str(path) for path in outputs.values())}"
+    )
     print(f"Summary report written to {report_path}")
     if not args.retain_temp:
         try:

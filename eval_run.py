@@ -4,7 +4,6 @@ import base64
 import dataclasses
 import json
 import os
-import random
 import re
 import sys
 import time
@@ -146,8 +145,15 @@ RETRYABLE_STATUS_CODES = {
     408,  # Request Timeout
     425,  # Too Early (ask client to retry)
     429,  # Too Many Requests
-    500, 502, 503, 504,  # Typical server/gateway errors
-    520, 521, 522, 523, 524,  # Common CDN edge/gateway errors
+    500,
+    502,
+    503,
+    504,  # Typical server/gateway errors
+    520,
+    521,
+    522,
+    523,
+    524,  # Common CDN edge/gateway errors
 }
 
 
@@ -238,6 +244,7 @@ class AdaptiveRateLimiter:
                 return
             self._min_interval = max(self._min_interval * 0.8, 0.0)
 
+
 def read_models_registry(path: str) -> Dict[str, ModelInfo]:
     with open(path, "r", encoding="utf-8") as f:
         data = json.load(f)
@@ -250,10 +257,18 @@ def read_models_registry(path: str) -> Dict[str, ModelInfo]:
             if isinstance(raw_min, (int, float)) and raw_min >= 0:
                 min_interval = float(raw_min)
             raw_rps = rate_limit.get("requests_per_second")
-            if min_interval is None and isinstance(raw_rps, (int, float)) and raw_rps > 0:
+            if (
+                min_interval is None
+                and isinstance(raw_rps, (int, float))
+                and raw_rps > 0
+            ):
                 min_interval = 1.0 / float(raw_rps)
             raw_rpm = rate_limit.get("requests_per_minute")
-            if min_interval is None and isinstance(raw_rpm, (int, float)) and raw_rpm > 0:
+            if (
+                min_interval is None
+                and isinstance(raw_rpm, (int, float))
+                and raw_rpm > 0
+            ):
                 min_interval = 60.0 / float(raw_rpm)
         elif isinstance(rate_limit, (int, float)) and rate_limit > 0:
             min_interval = 1.0 / float(rate_limit)
@@ -262,7 +277,9 @@ def read_models_registry(path: str) -> Dict[str, ModelInfo]:
             id=m.get("id"),
             label=m.get("label"),
             supports_vision=bool(m.get("supports_vision", False)),
-            supports_json_response_format=bool(m.get("supports_json_response_format", False)),
+            supports_json_response_format=bool(
+                m.get("supports_json_response_format", False)
+            ),
             min_request_interval=min_interval,
         )
         models[info.id] = info
@@ -318,6 +335,7 @@ def coerce_list_of_bytes(x: Any) -> Optional[List[bytes]]:
     # Explicit numpy.ndarray handling (object arrays of bytes)
     try:
         import numpy as np  # type: ignore
+
         if isinstance(x, np.ndarray):
             out: List[bytes] = []
             # Convert to list to avoid numpy scalars
@@ -360,7 +378,7 @@ def image_to_data_url(
 
     # Choose encoding format based on alpha channel and preference
     fmt = (prefer_format or "").upper().strip()
-    has_alpha = (getattr(img, "mode", "").upper() in {"RGBA", "LA"})
+    has_alpha = getattr(img, "mode", "").upper() in {"RGBA", "LA"}
     if not fmt:
         fmt = "PNG" if has_alpha else "JPEG"
     if fmt == "JPG":
@@ -373,7 +391,13 @@ def image_to_data_url(
     buf = BytesIO()
     save_kwargs = {"format": fmt}
     if fmt == "JPEG":
-        save_kwargs.update({"quality": int(max(50, min(100, jpeg_quality))), "optimize": True, "progressive": True})
+        save_kwargs.update(
+            {
+                "quality": int(max(50, min(100, jpeg_quality))),
+                "optimize": True,
+                "progressive": True,
+            }
+        )
         if img.mode not in ("RGB", "L"):
             img = img.convert("RGB")
     else:
@@ -397,12 +421,10 @@ def build_messages(
         system_lines = [
             "Du bist ein hilfreicher Assistent für Multiple-Choice-Aufgaben.",
             "Bewertung: Eine korrekte Antwort erhält die vollen Punkte der Aufgabe; eine falsche oder nicht eindeutig auswertbare Endantwort zieht ein Viertel der Aufgabenpunkte ab; 'Ich entscheide mich, nicht zu antworten.' ergibt 0 Punkte ohne Abzug.",
-        "Wähle die beste Option (A–E). Wenn die richtige Option nicht mit ausreichender Sicherheit bestimmbar ist oder die Aufgabe mehrdeutig ist, kannst du ausdrücklich mit 'Ich entscheide mich, nicht zu antworten.' antworten. Begründungen sind optional.",
+            "Wähle die beste Option (A–E). Wenn die richtige Option nicht mit ausreichender Sicherheit bestimmbar ist oder die Aufgabe mehrdeutig ist, kannst du ausdrücklich mit 'Ich entscheide mich, nicht zu antworten.' antworten. Begründungen sind optional.",
             "Füge am Ende eine einzelne Zeile an: Final answer: A|B|C|D|E|Declined.",
         ]
-        final_instruction = (
-            "Erinnere dich: Beende deine Antwort mit einer Zeile in diesem Format – Final answer: A|B|C|D|E|Declined."
-        )
+        final_instruction = "Erinnere dich: Beende deine Antwort mit einer Zeile in diesem Format – Final answer: A|B|C|D|E|Declined."
     else:
         system_lines = [
             "You are a helpful assistant for multiple-choice tasks.",
@@ -410,9 +432,7 @@ def build_messages(
             "Select the best option (A–E). If the correct option cannot be determined with sufficient confidence or the question is ambiguous, you may explicitly reply 'I choose not to answer.' Reasoning is optional.",
             "Add a single line at the end: Final answer: A|B|C|D|E|Declined.",
         ]
-        final_instruction = (
-            "Remember to finish with a line in this format – Final answer: A|B|C|D|E|Declined."
-        )
+        final_instruction = "Remember to finish with a line in this format – Final answer: A|B|C|D|E|Declined."
 
     sys_text = "\n".join(system_lines)
 
@@ -420,7 +440,9 @@ def build_messages(
 
     # Question text
     q_label = "Frage:" if is_de else "Question:"
-    content_parts.append({"type": "text", "text": f"{q_label} {row['problem_statement']}"})
+    content_parts.append(
+        {"type": "text", "text": f"{q_label} {row['problem_statement']}"}
+    )
 
     # Question image
     if encoded_images.get("question"):
@@ -429,7 +451,10 @@ def build_messages(
         content_parts.append(
             {
                 "type": "image_url",
-                "image_url": {"url": encoded_images["question"], "detail": image_detail},
+                "image_url": {
+                    "url": encoded_images["question"],
+                    "detail": image_detail,
+                },
             }
         )
 
@@ -555,7 +580,7 @@ def load_env_file(path: str = ".env") -> None:
                 value = value.strip()
                 if not key:
                     continue
-                if (value.startswith("\"") and value.endswith("\"")) or (
+                if (value.startswith('"') and value.endswith('"')) or (
                     value.startswith("'") and value.endswith("'")
                 ):
                     value = value[1:-1]
@@ -577,7 +602,9 @@ def resolve_dataset_path(raw_path: str) -> str:
     return expanded
 
 
-def parse_answer_from_text(text: str) -> Tuple[Optional[str], Optional[str], Optional[str]]:
+def parse_answer_from_text(
+    text: str,
+) -> Tuple[Optional[str], Optional[str], Optional[str]]:
     # returns (answer, rationale, parse_warning)
     if not text or not text.strip():
         return None, None, "empty_response"
@@ -621,7 +648,9 @@ def parse_answer_from_text(text: str) -> Tuple[Optional[str], Optional[str], Opt
 
     json_match = re.search(r"\{[\s\S]*?\}", text)
     if json_match:
-        ans_extracted, rat_extracted, warn_extracted = try_json_block(json_match.group(0))
+        ans_extracted, rat_extracted, warn_extracted = try_json_block(
+            json_match.group(0)
+        )
         if ans_extracted:
             if warn_extracted is None:
                 warn_extracted = "json_extracted"
@@ -750,7 +779,10 @@ async def evaluate_single_row(
     raw_entries: List[Dict[str, Any]] = []
 
     q_bytes = coerce_bytes(row.get("question_image"))
-    opt_bytes = {letter: coerce_bytes(row.get(f"sol_{letter}_image_bin")) for letter in LETTER_SET}
+    opt_bytes = {
+        letter: coerce_bytes(row.get(f"sol_{letter}_image_bin"))
+        for letter in LETTER_SET
+    }
     assoc_bytes = coerce_list_of_bytes(row.get("associated_images_bin")) or []
 
     has_images = bool(q_bytes or any(opt_bytes.values()) or assoc_bytes)
@@ -797,7 +829,7 @@ async def evaluate_single_row(
         for idx, b in enumerate(assoc_bytes):
             img = pil_from_bytes(b)
             if img is None:
-                warnings.append(f"assoc_{idx+1}_image_decode_failed")
+                warnings.append(f"assoc_{idx + 1}_image_decode_failed")
                 encoded_images["assoc_list"].append(None)
             else:
                 url_data, _ = image_to_data_url(
@@ -825,7 +857,9 @@ async def evaluate_single_row(
     attempt = 0
     max_attempts = 5
     combined_usage: Dict[str, float] = {}
-    combined_usage_details: Dict[str, float] = {}  # reasoning_tokens, cached_prompt_tokens, audio_prompt_tokens, explicit_reasoning_tokens
+    combined_usage_details: Dict[
+        str, float
+    ] = {}  # reasoning_tokens, cached_prompt_tokens, audio_prompt_tokens, explicit_reasoning_tokens
     last_usage: Optional[Dict[str, Any]] = None
     latencies: List[float] = []
     last_status_code: Optional[int] = None
@@ -915,7 +949,9 @@ async def evaluate_single_row(
                 "status_code": resp.status_code,
                 "error": err_msg,
             }
-            record = build_failure_record(row, args, latencies, warnings, err_msg, content_text or None)
+            record = build_failure_record(
+                row, args, latencies, warnings, err_msg, content_text or None
+            )
             return WorkerOutcome(
                 record=record,
                 raw_entries=raw_entries,
@@ -941,11 +977,15 @@ async def evaluate_single_row(
             choices = data.get("choices") or []
             if choices and isinstance(choices, list):
                 # Some providers may return None entries; guard accordingly
-                sanitized_choices = [choice for choice in choices if isinstance(choice, dict)]
-                choice0 = sanitized_choices[0] if sanitized_choices else (choices[0] or {})
+                sanitized_choices = [
+                    choice for choice in choices if isinstance(choice, dict)
+                ]
+                choice0 = (
+                    sanitized_choices[0] if sanitized_choices else (choices[0] or {})
+                )
                 finish_reason = choice0.get("finish_reason")
                 native_finish = choice0.get("native_finish_reason")
-                content_raw = ((choice0.get("message") or {}).get("content"))
+                content_raw = (choice0.get("message") or {}).get("content")
                 content_text = normalize_message_content(content_raw)
             else:
                 choice0 = {}
@@ -962,7 +1002,9 @@ async def evaluate_single_row(
                     for src_key in src_keys:
                         val = usage.get(src_key)
                         if isinstance(val, (int, float)):
-                            combined_usage[dst_key] = combined_usage.get(dst_key, 0.0) + float(val)
+                            combined_usage[dst_key] = combined_usage.get(
+                                dst_key, 0.0
+                            ) + float(val)
                             break
                 # Details when available
                 prompt_details = None
@@ -974,12 +1016,20 @@ async def evaluate_single_row(
                 if prompt_details is None:
                     prompt_details = {}
                 if isinstance(prompt_details, dict):
-                    for k_src, k_dst in (("cached_tokens", "cached_prompt_tokens"), ("audio_tokens", "audio_prompt_tokens")):
+                    for k_src, k_dst in (
+                        ("cached_tokens", "cached_prompt_tokens"),
+                        ("audio_tokens", "audio_prompt_tokens"),
+                    ):
                         val = prompt_details.get(k_src)
                         if isinstance(val, (int, float)):
-                            combined_usage_details[k_dst] = combined_usage_details.get(k_dst, 0.0) + float(val)
+                            combined_usage_details[k_dst] = combined_usage_details.get(
+                                k_dst, 0.0
+                            ) + float(val)
                 completion_details = None
-                for detail_key in ("completion_tokens_details", "output_tokens_details"):
+                for detail_key in (
+                    "completion_tokens_details",
+                    "output_tokens_details",
+                ):
                     details_candidate = usage.get(detail_key)
                     if isinstance(details_candidate, dict):
                         completion_details = details_candidate
@@ -989,12 +1039,21 @@ async def evaluate_single_row(
                 if isinstance(completion_details, dict):
                     rt = completion_details.get("reasoning_tokens")
                     if isinstance(rt, (int, float)):
-                        combined_usage_details["reasoning_tokens"] = combined_usage_details.get("reasoning_tokens", 0.0) + float(rt)
-                        combined_usage_details["explicit_reasoning_tokens"] = combined_usage_details.get("explicit_reasoning_tokens", 0.0) + float(rt)
+                        combined_usage_details["reasoning_tokens"] = (
+                            combined_usage_details.get("reasoning_tokens", 0.0)
+                            + float(rt)
+                        )
+                        combined_usage_details["explicit_reasoning_tokens"] = (
+                            combined_usage_details.get("explicit_reasoning_tokens", 0.0)
+                            + float(rt)
+                        )
                     # Some providers report visible reasoning separately (e.g., output_text tokens)
                     explicit_rt = completion_details.get("explicit_reasoning_tokens")
                     if isinstance(explicit_rt, (int, float)):
-                        combined_usage_details["explicit_reasoning_tokens"] = combined_usage_details.get("explicit_reasoning_tokens", 0.0) + float(explicit_rt)
+                        combined_usage_details["explicit_reasoning_tokens"] = (
+                            combined_usage_details.get("explicit_reasoning_tokens", 0.0)
+                            + float(explicit_rt)
+                        )
                 cost_val = usage.get("cost") or usage.get("total_cost")
                 if isinstance(cost_val, str):
                     try:
@@ -1002,7 +1061,9 @@ async def evaluate_single_row(
                     except Exception:
                         cost_val = None
                 if isinstance(cost_val, (int, float)):
-                    combined_usage["cost"] = combined_usage.get("cost", 0.0) + float(cost_val)
+                    combined_usage["cost"] = combined_usage.get("cost", 0.0) + float(
+                        cost_val
+                    )
             # Fallback: some providers put usage into an X-Usage header
             elif hasattr(resp, "headers"):
                 hdr = None
@@ -1045,26 +1106,38 @@ async def evaluate_single_row(
                             for src_key in src_keys:
                                 val = parsed.get(src_key)
                                 if isinstance(val, (int, float)):
-                                    combined_usage[dst_key] = combined_usage.get(dst_key, 0.0) + float(val)
+                                    combined_usage[dst_key] = combined_usage.get(
+                                        dst_key, 0.0
+                                    ) + float(val)
                                     break
                         # Details: either nested objects or dot-keys
                         prompt_details = None
-                        for detail_key in ("prompt_tokens_details", "input_tokens_details"):
+                        for detail_key in (
+                            "prompt_tokens_details",
+                            "input_tokens_details",
+                        ):
                             details_candidate = parsed.get(detail_key)
                             if isinstance(details_candidate, dict):
                                 prompt_details = details_candidate
                                 break
-                        if prompt_details is None and isinstance(parsed.get("prompt_tokens_details"), dict):
+                        if prompt_details is None and isinstance(
+                            parsed.get("prompt_tokens_details"), dict
+                        ):
                             prompt_details = parsed.get("prompt_tokens_details")
                         if prompt_details is None:
                             prompt_details = {}
                         completion_details = None
-                        for detail_key in ("completion_tokens_details", "output_tokens_details"):
+                        for detail_key in (
+                            "completion_tokens_details",
+                            "output_tokens_details",
+                        ):
                             details_candidate = parsed.get(detail_key)
                             if isinstance(details_candidate, dict):
                                 completion_details = details_candidate
                                 break
-                        if completion_details is None and isinstance(parsed.get("completion_tokens_details"), dict):
+                        if completion_details is None and isinstance(
+                            parsed.get("completion_tokens_details"), dict
+                        ):
                             completion_details = parsed.get("completion_tokens_details")
                         if completion_details is None:
                             completion_details = {}
@@ -1081,33 +1154,63 @@ async def evaluate_single_row(
                                 return None
                             return None
 
-                        for k_src, k_dst in (("cached_tokens", "cached_prompt_tokens"), ("audio_tokens", "audio_prompt_tokens")):
+                        for k_src, k_dst in (
+                            ("cached_tokens", "cached_prompt_tokens"),
+                            ("audio_tokens", "audio_prompt_tokens"),
+                        ):
                             val = (prompt_details or {}).get(k_src)
                             if not isinstance(val, (int, float)):
                                 val = _maybe_from_flat(f"prompt_tokens_details.{k_src}")
                             if isinstance(val, (int, float)):
-                                combined_usage_details[k_dst] = combined_usage_details.get(k_dst, 0.0) + float(val)
+                                combined_usage_details[k_dst] = (
+                                    combined_usage_details.get(k_dst, 0.0) + float(val)
+                                )
 
                         rt = (completion_details or {}).get("reasoning_tokens")
                         if not isinstance(rt, (int, float)):
-                            rt = _maybe_from_flat("completion_tokens_details.reasoning_tokens")
+                            rt = _maybe_from_flat(
+                                "completion_tokens_details.reasoning_tokens"
+                            )
                         if not isinstance(rt, (int, float)):
-                            rt = _maybe_from_flat("output_tokens_details.reasoning_tokens")
+                            rt = _maybe_from_flat(
+                                "output_tokens_details.reasoning_tokens"
+                            )
                         if isinstance(rt, (int, float)):
-                            combined_usage_details["reasoning_tokens"] = combined_usage_details.get("reasoning_tokens", 0.0) + float(rt)
-                            combined_usage_details["explicit_reasoning_tokens"] = combined_usage_details.get("explicit_reasoning_tokens", 0.0) + float(rt)
+                            combined_usage_details["reasoning_tokens"] = (
+                                combined_usage_details.get("reasoning_tokens", 0.0)
+                                + float(rt)
+                            )
+                            combined_usage_details["explicit_reasoning_tokens"] = (
+                                combined_usage_details.get(
+                                    "explicit_reasoning_tokens", 0.0
+                                )
+                                + float(rt)
+                            )
 
-                        explicit_rt = (completion_details or {}).get("explicit_reasoning_tokens")
+                        explicit_rt = (completion_details or {}).get(
+                            "explicit_reasoning_tokens"
+                        )
                         if not isinstance(explicit_rt, (int, float)):
-                            explicit_rt = _maybe_from_flat("completion_tokens_details.explicit_reasoning_tokens")
+                            explicit_rt = _maybe_from_flat(
+                                "completion_tokens_details.explicit_reasoning_tokens"
+                            )
                         if not isinstance(explicit_rt, (int, float)):
-                            explicit_rt = _maybe_from_flat("output_tokens_details.explicit_reasoning_tokens")
+                            explicit_rt = _maybe_from_flat(
+                                "output_tokens_details.explicit_reasoning_tokens"
+                            )
                         if isinstance(explicit_rt, (int, float)):
-                            combined_usage_details["explicit_reasoning_tokens"] = combined_usage_details.get("explicit_reasoning_tokens", 0.0) + float(explicit_rt)
+                            combined_usage_details["explicit_reasoning_tokens"] = (
+                                combined_usage_details.get(
+                                    "explicit_reasoning_tokens", 0.0
+                                )
+                                + float(explicit_rt)
+                            )
 
                         cost_val = parsed.get("cost") or parsed.get("total_cost")
                         if isinstance(cost_val, (int, float)):
-                            combined_usage["cost"] = combined_usage.get("cost", 0.0) + float(cost_val)
+                            combined_usage["cost"] = combined_usage.get(
+                                "cost", 0.0
+                            ) + float(cost_val)
             raw_entries.append(
                 {
                     "id": row.get("id"),
@@ -1130,7 +1233,11 @@ async def evaluate_single_row(
         finish_values = [finish_reason, native_finish]
         if ans is None and attempt < max_attempts:
             for reason in finish_values:
-                if isinstance(reason, str) and reason.lower() in {"length", "max_tokens", "max_tokens_exceeded"}:
+                if isinstance(reason, str) and reason.lower() in {
+                    "length",
+                    "max_tokens",
+                    "max_tokens_exceeded",
+                }:
                     should_retry = True
                     break
 
@@ -1198,13 +1305,18 @@ async def evaluate_single_row(
         if "reasoning_tokens" in combined_usage_details:
             reasoning_tokens = int(combined_usage_details["reasoning_tokens"])
         if "explicit_reasoning_tokens" in combined_usage_details:
-            explicit_reasoning_tokens = int(combined_usage_details["explicit_reasoning_tokens"])
+            explicit_reasoning_tokens = int(
+                combined_usage_details["explicit_reasoning_tokens"]
+            )
         if "cached_prompt_tokens" in combined_usage_details:
             cached_prompt_tokens = int(combined_usage_details["cached_prompt_tokens"])
         if "audio_prompt_tokens" in combined_usage_details:
             audio_prompt_tokens = int(combined_usage_details["audio_prompt_tokens"])
     elif isinstance(last_usage, dict):
-        def _extract_numeric(source: Dict[str, Any], keys: Tuple[str, ...]) -> Optional[int]:
+
+        def _extract_numeric(
+            source: Dict[str, Any], keys: Tuple[str, ...]
+        ) -> Optional[int]:
             for key in keys:
                 val = source.get(key)
                 if isinstance(val, (int, float)):
@@ -1217,7 +1329,9 @@ async def evaluate_single_row(
             return None
 
         prompt_tokens = _extract_numeric(last_usage, ("input_tokens", "prompt_tokens"))
-        completion_tokens = _extract_numeric(last_usage, ("output_tokens", "completion_tokens"))
+        completion_tokens = _extract_numeric(
+            last_usage, ("output_tokens", "completion_tokens")
+        )
         total_tokens = _extract_numeric(last_usage, ("total_tokens",))
         cost_usd = last_usage.get("cost") or last_usage.get("total_cost")
         if isinstance(cost_usd, str):
@@ -1237,10 +1351,14 @@ async def evaluate_single_row(
                 prompt_details_map = {}
             if isinstance(prompt_details_map, dict):
                 cached_prompt_tokens = (
-                    prompt_details_map.get("cached_tokens") if isinstance(prompt_details_map.get("cached_tokens"), int) else cached_prompt_tokens
+                    prompt_details_map.get("cached_tokens")
+                    if isinstance(prompt_details_map.get("cached_tokens"), int)
+                    else cached_prompt_tokens
                 )
                 audio_prompt_tokens = (
-                    prompt_details_map.get("audio_tokens") if isinstance(prompt_details_map.get("audio_tokens"), int) else audio_prompt_tokens
+                    prompt_details_map.get("audio_tokens")
+                    if isinstance(prompt_details_map.get("audio_tokens"), int)
+                    else audio_prompt_tokens
                 )
             completion_details_map = None
             for detail_key in ("completion_tokens_details", "output_tokens_details"):
@@ -1256,8 +1374,12 @@ async def evaluate_single_row(
                     if isinstance(completion_details_map.get("reasoning_tokens"), int)
                     else reasoning_tokens
                 )
-                if isinstance(completion_details_map.get("explicit_reasoning_tokens"), int):
-                    explicit_reasoning_tokens = completion_details_map.get("explicit_reasoning_tokens")
+                if isinstance(
+                    completion_details_map.get("explicit_reasoning_tokens"), int
+                ):
+                    explicit_reasoning_tokens = completion_details_map.get(
+                        "explicit_reasoning_tokens"
+                    )
         except Exception:
             pass
 
@@ -1326,7 +1448,9 @@ async def evaluate_rows_async(
     results_records: List[Dict[str, Any]] = []
     skipped = 0
 
-    limiter = AdaptiveRateLimiter(initial_interval=model_info.min_request_interval or 0.0)
+    limiter = AdaptiveRateLimiter(
+        initial_interval=model_info.min_request_interval or 0.0
+    )
     work_queue: asyncio.Queue[Optional[Dict[str, Any]]] = asyncio.Queue()
     result_queue: asyncio.Queue[Optional[WorkerOutcome]] = asyncio.Queue()
     stop_event = asyncio.Event()
@@ -1408,17 +1532,27 @@ async def evaluate_rows_async(
             year=as_int(record.year) if record is not None else None,
             group=group_value,
             points=as_float(record.points) if record is not None else None,
-            problem_number=as_int(record.problem_number) if record is not None else None,
+            problem_number=as_int(record.problem_number)
+            if record is not None
+            else None,
             multimodal=multimodal_value,
             latency_ms=record.latency_ms if record is not None else None,
             attempts=outcome.attempts or 1,
             prompt_tokens=record.prompt_tokens if record is not None else None,
             completion_tokens=record.completion_tokens if record is not None else None,
             total_tokens=record.total_tokens if record is not None else None,
-            reasoning_tokens=getattr(record, "reasoning_tokens", None) if record is not None else None,
-            explicit_reasoning_tokens=getattr(record, "explicit_reasoning_tokens", None) if record is not None else None,
-            cached_prompt_tokens=getattr(record, "cached_prompt_tokens", None) if record is not None else None,
-            audio_prompt_tokens=getattr(record, "audio_prompt_tokens", None) if record is not None else None,
+            reasoning_tokens=getattr(record, "reasoning_tokens", None)
+            if record is not None
+            else None,
+            explicit_reasoning_tokens=getattr(record, "explicit_reasoning_tokens", None)
+            if record is not None
+            else None,
+            cached_prompt_tokens=getattr(record, "cached_prompt_tokens", None)
+            if record is not None
+            else None,
+            audio_prompt_tokens=getattr(record, "audio_prompt_tokens", None)
+            if record is not None
+            else None,
             cost_usd_known=record.cost_usd if record is not None else None,
             predicted=record.predicted if record is not None else None,
             correct=record.is_correct if record is not None else None,
@@ -1439,7 +1573,16 @@ async def evaluate_rows_async(
                 continue
             async with inflight_lock:
                 active_inflight += 1
-            outcome = await evaluate_single_row(item, args, model_info, client, limiter, url, headers, metrics=aggregator)
+            outcome = await evaluate_single_row(
+                item,
+                args,
+                model_info,
+                client,
+                limiter,
+                url,
+                headers,
+                metrics=aggregator,
+            )
             await result_queue.put(outcome)
             async with inflight_lock:
                 active_inflight = max(0, active_inflight - 1)
@@ -1470,14 +1613,19 @@ async def evaluate_rows_async(
             if dashboard is not None:
                 async with inflight_lock:
                     inflight_current = active_inflight
-                snapshot = aggregator.snapshot(in_flight=inflight_current, worker_count=worker_count)
+                snapshot = aggregator.snapshot(
+                    in_flight=inflight_current, worker_count=worker_count
+                )
                 dashboard.update(snapshot)
             else:
                 if progress is not None:
                     progress.update(1)
             result_queue.task_done()
 
-    limits = httpx.Limits(max_connections=max(4, worker_count * 2), max_keepalive_connections=max(2, worker_count))
+    limits = httpx.Limits(
+        max_connections=max(4, worker_count * 2),
+        max_keepalive_connections=max(2, worker_count),
+    )
     timeout = httpx.Timeout(120.0)
 
     try:
@@ -1503,12 +1651,14 @@ async def evaluate_rows_async(
     return rows, results_records, skipped
 
 
-
 def main():
     import time
+
     start_time = time.time()  # Track start time for total run time
-    
-    parser = argparse.ArgumentParser(description="LLM evaluation runner for Känguru benchmark")
+
+    parser = argparse.ArgumentParser(
+        description="LLM evaluation runner for Känguru benchmark"
+    )
     parser.add_argument("--dataset", required=True, help="Path to dataset .parquet")
     parser.add_argument("--model", required=True, help="Model ID from models.json")
     parser.add_argument("--reasoning", default=None, help=argparse.SUPPRESS)
@@ -1525,32 +1675,109 @@ def main():
     )
     parser.add_argument("--output_dir", default="runs")
     parser.add_argument("--fail_fast", action="store_true")
-    parser.add_argument("--live-dashboard", dest="live_dashboard", action="store_true", help="Force enable the Rich dashboard even on non-tty outputs.")
-    parser.add_argument("--no-live-dashboard", dest="live_dashboard", action="store_false", help="Disable the Rich dashboard even on ttys.")
+    parser.add_argument(
+        "--live-dashboard",
+        dest="live_dashboard",
+        action="store_true",
+        help="Force enable the Rich dashboard even on non-tty outputs.",
+    )
+    parser.add_argument(
+        "--no-live-dashboard",
+        dest="live_dashboard",
+        action="store_false",
+        help="Disable the Rich dashboard even on ttys.",
+    )
     parser.set_defaults(live_dashboard=None)
-    parser.add_argument("--dashboard-refresh-hz", type=float, default=5.0, help="Refresh rate for the live dashboard (updates per second).")
-    parser.add_argument("--events-jsonl", default="auto", help="Path to usage events JSONL log ('off' to disable, default auto).")
-    parser.add_argument("--no-events-jsonl", dest="events_jsonl", action="store_const", const="off", help="Disable usage events capture.")
-    parser.add_argument("--recent-items", type=int, default=20, help="Number of recent items to show in the dashboard table.")
-    parser.add_argument("--ui-compact", action="store_true", help="Use compact dashboard layout suitable for smaller terminals.")
-    parser.add_argument("--text-only", action="store_true", help="Evaluate only text (non-multimodal) questions; drop multimodal rows before running.")
+    parser.add_argument(
+        "--dashboard-refresh-hz",
+        type=float,
+        default=5.0,
+        help="Refresh rate for the live dashboard (updates per second).",
+    )
+    parser.add_argument(
+        "--events-jsonl",
+        default="auto",
+        help="Path to usage events JSONL log ('off' to disable, default auto).",
+    )
+    parser.add_argument(
+        "--no-events-jsonl",
+        dest="events_jsonl",
+        action="store_const",
+        const="off",
+        help="Disable usage events capture.",
+    )
+    parser.add_argument(
+        "--recent-items",
+        type=int,
+        default=20,
+        help="Number of recent items to show in the dashboard table.",
+    )
+    parser.add_argument(
+        "--ui-compact",
+        action="store_true",
+        help="Use compact dashboard layout suitable for smaller terminals.",
+    )
+    parser.add_argument(
+        "--text-only",
+        action="store_true",
+        help="Evaluate only text (non-multimodal) questions; drop multimodal rows before running.",
+    )
     # Image controls for multimodal inputs
-    parser.add_argument("--image_max_dim", type=int, default=1024, help="Max image dimension (long edge) in pixels; no upscaling")
-    parser.add_argument("--image_jpeg_quality", type=int, default=85, help="JPEG quality (50–100)")
-    parser.add_argument("--image_detail", choices=["auto", "low", "high"], default="auto", help="Vision detail hint for providers that support it")
-    
+    parser.add_argument(
+        "--image_max_dim",
+        type=int,
+        default=1024,
+        help="Max image dimension (long edge) in pixels; no upscaling",
+    )
+    parser.add_argument(
+        "--image_jpeg_quality", type=int, default=85, help="JPEG quality (50–100)"
+    )
+    parser.add_argument(
+        "--image_detail",
+        choices=["auto", "low", "high"],
+        default="auto",
+        help="Vision detail hint for providers that support it",
+    )
+
     # Categorical Filters
-    parser.add_argument("--year", type=int, action="append", help="Filter by one or more specific years.")
-    parser.add_argument("--group", type=str, action="append", help="Filter by one or more specific grade groups.")
-    parser.add_argument("--language", type=str, action="append", help="Filter by one or more specific languages.")
-    
+    parser.add_argument(
+        "--year",
+        type=int,
+        action="append",
+        help="Filter by one or more specific years.",
+    )
+    parser.add_argument(
+        "--group",
+        type=str,
+        action="append",
+        help="Filter by one or more specific grade groups.",
+    )
+    parser.add_argument(
+        "--language",
+        type=str,
+        action="append",
+        help="Filter by one or more specific languages.",
+    )
+
     # Range Filters
-    parser.add_argument("--year-range", type=str, help="Filter by an inclusive range of years (e.g., '2020-2023').")
-    parser.add_argument("--points-range", type=str, help="Filter by an inclusive range of points (e.g., '3.75-5.0').")
-    
+    parser.add_argument(
+        "--year-range",
+        type=str,
+        help="Filter by an inclusive range of years (e.g., '2020-2023').",
+    )
+    parser.add_argument(
+        "--points-range",
+        type=str,
+        help="Filter by an inclusive range of points (e.g., '3.75-5.0').",
+    )
+
     # Boolean Filter
-    parser.add_argument("--vision-only", action="store_true", help="Evaluate only vision (multimodal) questions.")
-    
+    parser.add_argument(
+        "--vision-only",
+        action="store_true",
+        help="Evaluate only vision (multimodal) questions.",
+    )
+
     args = parser.parse_args()
 
     legacy_reasoning = args.reasoning
@@ -1571,23 +1798,34 @@ def main():
     else:
         dashboard_enabled = stdout_isatty
     if dashboard_enabled and not DASHBOARD_AVAILABLE:
-        print("Rich dashboard unavailable; falling back to tqdm progress bar.", file=sys.stderr)
+        print(
+            "Rich dashboard unavailable; falling back to tqdm progress bar.",
+            file=sys.stderr,
+        )
         dashboard_enabled = False
     dashboard_refresh = max(1.0, float(args.dashboard_refresh_hz or 5.0))
     dashboard_recent = max(5, int(args.recent_items or 20))
     events_config = args.events_jsonl or "auto"
 
     if dashboard_enabled and not stdout_isatty:
-        print("Warning: live dashboard forced on a non-TTY output; layout may degrade.", file=sys.stderr)
+        print(
+            "Warning: live dashboard forced on a non-TTY output; layout may degrade.",
+            file=sys.stderr,
+        )
 
     load_env_file()
 
     api_key = os.environ.get("OPENROUTER_API_KEY")
     if not api_key:
-        print("ERROR: OPENROUTER_API_KEY environment variable is required.", file=sys.stderr)
+        print(
+            "ERROR: OPENROUTER_API_KEY environment variable is required.",
+            file=sys.stderr,
+        )
         sys.exit(2)
 
-    models = read_models_registry(os.path.join(os.path.dirname(__file__), "models.json"))
+    models = read_models_registry(
+        os.path.join(os.path.dirname(__file__), "models.json")
+    )
     if args.model not in models:
         print(f"ERROR: model '{args.model}' not found in models.json", file=sys.stderr)
         sys.exit(2)
@@ -1598,7 +1836,6 @@ def main():
     except Exception as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
         sys.exit(2)
-
 
     run_dir, ts = ensure_output_dir(args.output_dir, args.model)
 
@@ -1625,44 +1862,52 @@ def main():
 
     # Handle mutual exclusion between text-only and vision-only
     if args.text_only and args.vision_only:
-        print("ERROR: --text-only and --vision-only are mutually exclusive.", file=sys.stderr)
+        print(
+            "ERROR: --text-only and --vision-only are mutually exclusive.",
+            file=sys.stderr,
+        )
         sys.exit(2)
 
     # Apply filters sequentially
     # Categorical filters
     if args.year:
-        df = df[df['year'].isin(args.year)]
-    
+        df = df[df["year"].isin(args.year)]
+
     if args.group:
-        df = df[df['group'].isin(args.group)]
-    
+        df = df[df["group"].isin(args.group)]
+
     if args.language:
-        df = df[df['language'].isin(args.language)]
-    
+        df = df[df["language"].isin(args.language)]
+
     # Range filters
     if args.year_range:
         try:
-            start_str, end_str = args.year_range.split('-')
+            start_str, end_str = args.year_range.split("-")
             start = int(start_str.strip())
             end = int(end_str.strip())
-            df = df[(df['year'] >= start) & (df['year'] <= end)]
+            df = df[(df["year"] >= start) & (df["year"] <= end)]
         except ValueError:
-            print(f"ERROR: Invalid year range format: '{args.year_range}'. Expected format: 'START-END'", file=sys.stderr)
+            print(
+                f"ERROR: Invalid year range format: '{args.year_range}'. Expected format: 'START-END'",
+                file=sys.stderr,
+            )
             sys.exit(2)
-    
+
     if args.points_range:
         try:
-            min_str, max_str = args.points_range.split('-')
+            min_str, max_str = args.points_range.split("-")
             min_val = float(min_str.strip())
             max_val = float(max_str.strip())
-            df = df[(df['points'] >= min_val) & (df['points'] <= max_val)]
+            df = df[(df["points"] >= min_val) & (df["points"] <= max_val)]
         except ValueError:
-            print(f"ERROR: Invalid points range format: '{args.points_range}'. Expected format: 'MIN-MAX'", file=sys.stderr)
+            print(
+                f"ERROR: Invalid points range format: '{args.points_range}'. Expected format: 'MIN-MAX'",
+                file=sys.stderr,
+            )
             sys.exit(2)
-    
-    # Boolean filter
+
     if args.vision_only:
-        df = df[df['multimodal'] == True]
+        df = df[df["multimodal"].astype(bool)]
 
     total_rows_loaded = int(len(df))
     cli_text_only = bool(getattr(args, "text_only", False))
@@ -1702,17 +1947,31 @@ def main():
         limiter_desc = "adaptive (no seed)"
 
     multimodal_count = sum(1 for row in rows_data if bool(row.get("multimodal")))
-    avg_points = float(df["points"].dropna().astype(float).mean()) if not df["points"].dropna().empty else None
+    avg_points = (
+        float(df["points"].dropna().astype(float).mean())
+        if not df["points"].dropna().empty
+        else None
+    )
     year_counts = df["year"].value_counts().to_dict() if "year" in df.columns else {}
-    year_desc = ", ".join(f"{k}:{v}" for k, v in sorted(year_counts.items())) if year_counts else "n/a"
+    year_desc = (
+        ", ".join(f"{k}:{v}" for k, v in sorted(year_counts.items()))
+        if year_counts
+        else "n/a"
+    )
 
     print("Configuration:")
     print(f"  Model: {model_info.id}")
     if model_info.label:
         print(f"  Label: {model_info.label}")
     print(f"  Dataset rows: {len(rows_data)}")
-    print(f"  Multimodal rows: {multimodal_count} ({multimodal_count/len(rows_data)*100:.1f}% )" if rows_data else "  Multimodal rows: 0")
-    print(f"  Mode: {'sequential' if worker_count == 1 else f'concurrent x{worker_count}'}")
+    print(
+        f"  Multimodal rows: {multimodal_count} ({multimodal_count / len(rows_data) * 100:.1f}% )"
+        if rows_data
+        else "  Multimodal rows: 0"
+    )
+    print(
+        f"  Mode: {'sequential' if worker_count == 1 else f'concurrent x{worker_count}'}"
+    )
     print(f"  Rate limiter: {limiter_desc}")
     print(f"  Live dashboard: {'on' if dashboard_enabled else 'off'}")
     if events_path is not None:
@@ -1723,7 +1982,6 @@ def main():
     if avg_points is not None:
         print(f"  Avg points: {avg_points:.2f}")
     print(f"  Year distribution: {year_desc}")
-    expected_skipped_due_to_model = 0
     if cli_text_only:
         print("  Text-only filter: on (--text-only)")
         print(f"  Dropped due to --text-only: {cli_filtered_out_rows}")
@@ -1735,10 +1993,11 @@ def main():
     # Add proper spacing after pre-run summary to separate from dashboard
     print()
 
-    with open(results_jsonl_path, "w", encoding="utf-8") as results_jsonl, \
-        open(raw_responses_path, "w", encoding="utf-8") as raw_responses_file, \
-        open(failures_jsonl_path, "w", encoding="utf-8") as failures_file:
-
+    with (
+        open(results_jsonl_path, "w", encoding="utf-8") as results_jsonl,
+        open(raw_responses_path, "w", encoding="utf-8") as raw_responses_file,
+        open(failures_jsonl_path, "w", encoding="utf-8") as failures_file,
+    ):
         rows, results_records, skipped = asyncio.run(
             evaluate_rows_async(
                 rows_data,
@@ -1761,7 +2020,9 @@ def main():
     if rows:
         results_df = pd.DataFrame(results_records)
     else:
-        results_df = pd.DataFrame(columns=[f.name for f in dataclasses.fields(RowRecord)])
+        results_df = pd.DataFrame(
+            columns=[f.name for f in dataclasses.fields(RowRecord)]
+        )
     results_path = os.path.join(run_dir, "results.parquet")
     results_df.to_parquet(results_path, engine="pyarrow", index=False)
 
@@ -1787,14 +2048,22 @@ def main():
     skipped_count = skipped
 
     if len(results_df.columns) > 0:
-        correct_mask = results_df["is_correct"] == True
-        accuracy = float((correct_mask & answered_mask).sum() / answered_count) if answered_count else 0.0
+        correct_mask = results_df["is_correct"].fillna(False).astype(bool)
+        accuracy = (
+            float((correct_mask & answered_mask).sum() / answered_count)
+            if answered_count
+            else 0.0
+        )
     else:
         accuracy = 0.0
 
     if not results_df.empty:
-        points_series = pd.to_numeric(results_df.get("points"), errors="coerce").fillna(0.0)
-        earned_series = pd.to_numeric(results_df.get("points_earned"), errors="coerce").fillna(0.0)
+        points_series = pd.to_numeric(results_df.get("points"), errors="coerce").fillna(
+            0.0
+        )
+        earned_series = pd.to_numeric(
+            results_df.get("points_earned"), errors="coerce"
+        ).fillna(0.0)
 
         start_points_total = 0.0
         if not points_series.empty:
@@ -1804,7 +2073,9 @@ def main():
                 if pd.isna(group_value):
                     continue
 
-                if isinstance(group_value, (int, float)) and not isinstance(group_value, bool):
+                if isinstance(group_value, (int, float)) and not isinstance(
+                    group_value, bool
+                ):
                     if float(group_value).is_integer():
                         sanitized_group_value: object = int(float(group_value))
                     else:
@@ -1815,7 +2086,9 @@ def main():
                 group_key = str(sanitized_group_value).strip()
                 if not group_key:
                     continue
-                normalized_year = "None" if pd.isna(year_value) else str(year_value).strip()
+                normalized_year = (
+                    "None" if pd.isna(year_value) else str(year_value).strip()
+                )
                 key = (normalized_year, group_key)
                 if key in seen_keys:
                     continue
@@ -1846,19 +2119,29 @@ def main():
     prompt_tokens_series = pd.Series(dtype="int64")
     completion_tokens_series = pd.Series(dtype="int64")
     if len(results_df.columns) > 0 and not answered_mask.empty:
-        total_tokens_series = results_df.loc[answered_mask, "total_tokens"].dropna().astype(int)
+        total_tokens_series = (
+            results_df.loc[answered_mask, "total_tokens"].dropna().astype(int)
+        )
         if "prompt_tokens" in results_df.columns:
-            prompt_tokens_series = results_df.loc[answered_mask, "prompt_tokens"].dropna().astype(int)
+            prompt_tokens_series = (
+                results_df.loc[answered_mask, "prompt_tokens"].dropna().astype(int)
+            )
         if "completion_tokens" in results_df.columns:
             completion_tokens_series = (
                 results_df.loc[answered_mask, "completion_tokens"].dropna().astype(int)
             )
-        mean_tokens = float(total_tokens_series.mean()) if not total_tokens_series.empty else None
+        mean_tokens = (
+            float(total_tokens_series.mean()) if not total_tokens_series.empty else None
+        )
         mean_prompt_tokens = (
-            float(prompt_tokens_series.mean()) if not prompt_tokens_series.empty else None
+            float(prompt_tokens_series.mean())
+            if not prompt_tokens_series.empty
+            else None
         )
         mean_completion_tokens = (
-            float(completion_tokens_series.mean()) if not completion_tokens_series.empty else None
+            float(completion_tokens_series.mean())
+            if not completion_tokens_series.empty
+            else None
         )
         cost_series = results_df.loc[answered_mask, "cost_usd"].dropna().astype(float)
         total_cost = float(cost_series.sum()) if not cost_series.empty else 0.0
@@ -1870,24 +2153,36 @@ def main():
             reasoning_tokens_series = pd.Series(dtype="int64")
         if "explicit_reasoning_tokens" in results_df.columns:
             explicit_reasoning_tokens_series = (
-                results_df.loc[answered_mask, "explicit_reasoning_tokens"].dropna().astype(int)
+                results_df.loc[answered_mask, "explicit_reasoning_tokens"]
+                .dropna()
+                .astype(int)
             )
         else:
             explicit_reasoning_tokens_series = pd.Series(dtype="int64")
         mean_reasoning_tokens = (
-            float(reasoning_tokens_series.mean()) if not reasoning_tokens_series.empty else None
+            float(reasoning_tokens_series.mean())
+            if not reasoning_tokens_series.empty
+            else None
         )
         total_reasoning_tokens = (
-            int(reasoning_tokens_series.sum()) if not reasoning_tokens_series.empty else None
+            int(reasoning_tokens_series.sum())
+            if not reasoning_tokens_series.empty
+            else None
         )
         reasoning_tokens_known_count = int(len(reasoning_tokens_series))
         mean_explicit_reasoning_tokens = (
-            float(explicit_reasoning_tokens_series.mean()) if not explicit_reasoning_tokens_series.empty else None
+            float(explicit_reasoning_tokens_series.mean())
+            if not explicit_reasoning_tokens_series.empty
+            else None
         )
         total_explicit_reasoning_tokens = (
-            int(explicit_reasoning_tokens_series.sum()) if not explicit_reasoning_tokens_series.empty else None
+            int(explicit_reasoning_tokens_series.sum())
+            if not explicit_reasoning_tokens_series.empty
+            else None
         )
-        explicit_reasoning_tokens_known_count = int(len(explicit_reasoning_tokens_series))
+        explicit_reasoning_tokens_known_count = int(
+            len(explicit_reasoning_tokens_series)
+        )
         unknown_usage_count = int(answered_count - len(total_tokens_series))
     else:
         mean_tokens = None
@@ -1902,24 +2197,44 @@ def main():
         total_explicit_reasoning_tokens = None
         explicit_reasoning_tokens_known_count = 0
 
-    total_prompt_tokens_value = int(prompt_tokens_series.sum()) if not prompt_tokens_series.empty else None
-    total_completion_tokens_value = int(completion_tokens_series.sum()) if not completion_tokens_series.empty else None
-    total_total_tokens_value = int(total_tokens_series.sum()) if not total_tokens_series.empty else None
+    total_prompt_tokens_value = (
+        int(prompt_tokens_series.sum()) if not prompt_tokens_series.empty else None
+    )
+    total_completion_tokens_value = (
+        int(completion_tokens_series.sum())
+        if not completion_tokens_series.empty
+        else None
+    )
+    total_total_tokens_value = (
+        int(total_tokens_series.sum()) if not total_tokens_series.empty else None
+    )
     prompt_tokens_known = int(len(prompt_tokens_series))
     completion_tokens_known = int(len(completion_tokens_series))
 
     def breakdown_by(col: str) -> Dict[str, Any]:
         result: Dict[str, Any] = {}
-        if len(results_df.columns) == 0 or col not in results_df.columns or answered_count == 0:
+        if (
+            len(results_df.columns) == 0
+            or col not in results_df.columns
+            or answered_count == 0
+        ):
             return result
         for key, sub in results_df.loc[answered_mask].groupby(col):
-            sub_correct = (sub["is_correct"] == True).sum()
+            sub_correct = sub["is_correct"].fillna(False).astype(bool).sum()
             sub_count = len(sub)
             sub_points = sub["points"].astype(float)
             sub_earned = sub["points_earned"].astype(float)
             sub_acc = float(sub_correct / sub_count) if sub_count else 0.0
-            sub_pwa = float(sub_earned.sum() / sub_points.sum()) if sub_points.sum() > 0 else 0.0
-            result[str(key)] = {"count": int(sub_count), "accuracy": sub_acc, "points_weighted_accuracy": sub_pwa}
+            sub_pwa = (
+                float(sub_earned.sum() / sub_points.sum())
+                if sub_points.sum() > 0
+                else 0.0
+            )
+            result[str(key)] = {
+                "count": int(sub_count),
+                "accuracy": sub_acc,
+                "points_weighted_accuracy": sub_pwa,
+            }
         return result
 
     warning_counts_counter: Counter[str] = Counter()
@@ -1975,7 +2290,11 @@ def main():
         "breakdown_by_group": breakdown_by("group"),
         "breakdown_by_year": breakdown_by("year"),
         "text_only_evaluation": bool(cli_text_only or (not model_info.supports_vision)),
-        "text_only_source": ("cli" if cli_text_only else ("model" if not model_info.supports_vision else "none")),
+        "text_only_source": (
+            "cli"
+            if cli_text_only
+            else ("model" if not model_info.supports_vision else "none")
+        ),
         "cli_filtered_out_multimodal_rows": int(cli_filtered_out_rows),
         "model_filtered_out_multimodal_rows": int(model_filtered_out_rows),
         "total_rows_loaded": int(total_rows_loaded),
@@ -1997,7 +2316,9 @@ def main():
         "multimodal_policy": {
             "text_only_cli": cli_text_only,
             "model_supports_vision": bool(model_info.supports_vision),
-            "effective_text_only": bool(cli_text_only or (not model_info.supports_vision)),
+            "effective_text_only": bool(
+                cli_text_only or (not model_info.supports_vision)
+            ),
             "total_rows_loaded": int(total_rows_loaded),
             "cli_filtered_out_rows": int(cli_filtered_out_rows),
             "model_filtered_out_rows": int(model_filtered_out_rows),
@@ -2070,7 +2391,7 @@ def main():
         if top_warnings:
             print(f"  Top warnings: {top_warnings}")
     print(f"  Worker count: {worker_count}")
-    
+
     # Calculate and display total runtime
     end_time = time.time()
     total_runtime = end_time - start_time
@@ -2080,7 +2401,7 @@ def main():
         runtime_str = f"{hours:02d}:{minutes:02d}:{seconds:02d}"
     else:
         runtime_str = f"{minutes:02d}:{seconds:02d}"
-    
+
     print(f"  Total runtime: {runtime_str}")
 
 

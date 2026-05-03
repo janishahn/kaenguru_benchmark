@@ -7,7 +7,7 @@ from collections import deque
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from threading import Lock
-from typing import Any, Deque, Dict, List, Optional
+from typing import Deque, List, Optional
 
 from .eta import EtaEstimate, SmartEta
 
@@ -40,7 +40,11 @@ class UsageEvent:
     monotonic_ts: float = field(default_factory=time.monotonic)
 
     def normalize_tokens(self) -> None:
-        if self.total_tokens is None and self.prompt_tokens is not None and self.completion_tokens is not None:
+        if (
+            self.total_tokens is None
+            and self.prompt_tokens is not None
+            and self.completion_tokens is not None
+        ):
             self.total_tokens = self.prompt_tokens + self.completion_tokens
 
 
@@ -291,10 +295,14 @@ class Aggregator:
         index = max(0, int(math.ceil(0.9 * len(ordered)) - 1))
         return float(ordered[index])
 
-    def project_cost(self, *, tokens_left: Optional[float], remaining_items: int) -> CostProjection:
+    def project_cost(
+        self, *, tokens_left: Optional[float], remaining_items: int
+    ) -> CostProjection:
         mean_cost_per_token = None
         if self._tokens_with_cost > 0:
-            mean_cost_per_token = self._cost_with_tokens_total / float(self._tokens_with_cost)
+            mean_cost_per_token = self._cost_with_tokens_total / float(
+                self._tokens_with_cost
+            )
 
         mean_cost_per_item = None
         if self._items_with_cost > 0:
@@ -318,19 +326,15 @@ class Aggregator:
                 if tokens_left is not None:
                     cost_of_remaining = tokens_left * mean_cost_per_token
                 elif self._mean_tokens() is not None:
-                    cost_of_remaining = remaining_items * self._mean_tokens() * mean_cost_per_token
+                    cost_of_remaining = (
+                        remaining_items * self._mean_tokens() * mean_cost_per_token
+                    )
 
             projected_total = cost_of_completed + cost_of_remaining
 
         # Fallback if no projections could be made
         if projected_total is None:
             projected_total = self._cost_known_total
-
-        # Apply early run adjustment: if we have limited cost data and are in early phase,
-        # the projection might be low due to initial underestimation
-        completion_ratio = self._completed / self.total_items if self.total_items > 0 else 0
-        early_stage_threshold = min(0.40, max(0.15, 15.0 / self.total_items)) if self.total_items > 0 else 0.40
-        has_limited_data = self._items_with_cost <= 15 or self._items_with_cost <= max(1, self.total_items * 0.15)
 
         # Confidence bands - adjust band size based on sample size
         if projected_total > self._cost_known_total:
@@ -353,7 +357,11 @@ class Aggregator:
         elif self._items_with_cost >= 10:
             confidence = "medium"
 
-        if mean_cost_per_token is None and mean_cost_per_item is not None and confidence == "high":
+        if (
+            mean_cost_per_token is None
+            and mean_cost_per_item is not None
+            and confidence == "high"
+        ):
             confidence = "medium"
 
         return CostProjection(
@@ -389,9 +397,17 @@ class Aggregator:
             remaining = max(self.total_items - self._completed, 0)
             mean_tokens = self._mean_tokens()
             tokens_left = mean_tokens * remaining if mean_tokens is not None else None
-            cost_projection = self.project_cost(tokens_left=tokens_left, remaining_items=remaining)
-            mean_latency = (self._latency_sum / self._latency_count) if self._latency_count else None
-            mean_attempts = (self._attempts_sum / self._completed) if self._completed else None
+            cost_projection = self.project_cost(
+                tokens_left=tokens_left, remaining_items=remaining
+            )
+            mean_latency = (
+                (self._latency_sum / self._latency_count)
+                if self._latency_count
+                else None
+            )
+            mean_attempts = (
+                (self._attempts_sum / self._completed) if self._completed else None
+            )
             snapshot = DashboardSnapshot(
                 timestamp=current_time,
                 model_id=self.model_id,

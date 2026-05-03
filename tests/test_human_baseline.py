@@ -169,23 +169,107 @@ def test_human_endpoints(tmp_path):
     _write_mock_run(
         runs_dir / run1,
         results=[
-            {"id": "g3-1", "year": "2008", "group": "3", "points": 3.0, "points_earned": 3.0, "is_correct": True},
-            {"id": "g3-2", "year": "2008", "group": "3", "points": 4.0, "points_earned": 4.0, "is_correct": True},
-            {"id": "g3-3", "year": "2008", "group": "3", "points": 5.0, "points_earned": -1.25, "is_correct": False},
-            {"id": "g4-1", "year": "2008", "group": "4", "points": 3.0, "points_earned": -0.75, "is_correct": False},
-            {"id": "g4-2", "year": "2008", "group": "4", "points": 4.0, "points_earned": -1.0, "is_correct": False},
-            {"id": "g4-3", "year": "2008", "group": "4", "points": 5.0, "points_earned": -1.25, "is_correct": False}
+            {
+                "id": "g3-1",
+                "year": "2008",
+                "group": "3",
+                "points": 3.0,
+                "points_earned": 3.0,
+                "is_correct": True,
+            },
+            {
+                "id": "g3-2",
+                "year": "2008",
+                "group": "3",
+                "points": 4.0,
+                "points_earned": 4.0,
+                "is_correct": True,
+            },
+            {
+                "id": "g3-3",
+                "year": "2008",
+                "group": "3",
+                "points": 5.0,
+                "points_earned": -1.25,
+                "is_correct": False,
+            },
+            {
+                "id": "g4-1",
+                "year": "2008",
+                "group": "4",
+                "points": 3.0,
+                "points_earned": -0.75,
+                "is_correct": False,
+            },
+            {
+                "id": "g4-2",
+                "year": "2008",
+                "group": "4",
+                "points": 4.0,
+                "points_earned": -1.0,
+                "is_correct": False,
+            },
+            {
+                "id": "g4-3",
+                "year": "2008",
+                "group": "4",
+                "points": 5.0,
+                "points_earned": -1.25,
+                "is_correct": False,
+            },
         ],
     )
     _write_mock_run(
         runs_dir / run2,
         results=[
-            {"id": "g3-1", "year": "2008", "group": "3", "points": 3.0, "points_earned": -0.75, "is_correct": False},
-            {"id": "g3-2", "year": "2008", "group": "3", "points": 4.0, "points_earned": -1.0, "is_correct": False},
-            {"id": "g3-3", "year": "2008", "group": "3", "points": 5.0, "points_earned": -1.25, "is_correct": False},
-            {"id": "g4-1", "year": "2008", "group": "4", "points": 3.0, "points_earned": 3.0, "is_correct": True},
-            {"id": "g4-2", "year": "2008", "group": "4", "points": 4.0, "points_earned": 4.0, "is_correct": True},
-            {"id": "g4-3", "year": "2008", "group": "4", "points": 5.0, "points_earned": -1.25, "is_correct": False}
+            {
+                "id": "g3-1",
+                "year": "2008",
+                "group": "3",
+                "points": 3.0,
+                "points_earned": -0.75,
+                "is_correct": False,
+            },
+            {
+                "id": "g3-2",
+                "year": "2008",
+                "group": "3",
+                "points": 4.0,
+                "points_earned": -1.0,
+                "is_correct": False,
+            },
+            {
+                "id": "g3-3",
+                "year": "2008",
+                "group": "3",
+                "points": 5.0,
+                "points_earned": -1.25,
+                "is_correct": False,
+            },
+            {
+                "id": "g4-1",
+                "year": "2008",
+                "group": "4",
+                "points": 3.0,
+                "points_earned": 3.0,
+                "is_correct": True,
+            },
+            {
+                "id": "g4-2",
+                "year": "2008",
+                "group": "4",
+                "points": 4.0,
+                "points_earned": 4.0,
+                "is_correct": True,
+            },
+            {
+                "id": "g4-3",
+                "year": "2008",
+                "group": "4",
+                "points": 5.0,
+                "points_earned": -1.25,
+                "is_correct": False,
+            },
         ],
     )
 
@@ -216,13 +300,17 @@ def test_human_endpoints(tmp_path):
 
     run_compare = client.get(f"/api/humans/compare/run/{run1}").json()
     assert run_compare["entries"]
-    grade3_entry = next(item for item in run_compare["entries"] if item["grade_id"] == "3")
+    grade3_entry = next(
+        item for item in run_compare["entries"] if item["grade_id"] == "3"
+    )
     assert pytest.approx(grade3_entry["llm_total"], rel=1e-6) == 29.75
     assert pytest.approx(grade3_entry["llm_start_points"], rel=1e-6) == 24.0
     assert pytest.approx(grade3_entry["llm_points_awarded"], rel=1e-6) == 5.75
     assert pytest.approx(grade3_entry["llm_points_available"], rel=1e-6) == 12.0
     assert grade3_entry["bin_comparison"][2]["llm_share"] == 1.0
-    assert "member_overrides" in grade3_entry and "3" in grade3_entry["member_overrides"]
+    assert (
+        "member_overrides" in grade3_entry and "3" in grade3_entry["member_overrides"]
+    )
     override3 = grade3_entry["member_overrides"]["3"]
     assert override3["grade_label"] == "3"
     assert override3["human_mean"] is not None
@@ -232,9 +320,13 @@ def test_human_endpoints(tmp_path):
         json={"run_ids": [run1, run2]},
     ).json()
     assert cohort["micro"]["entries"]
-    micro_grade3 = next(entry for entry in cohort["micro"]["entries"] if entry["grade_id"] == "3")
+    micro_grade3 = next(
+        entry for entry in cohort["micro"]["entries"] if entry["grade_id"] == "3"
+    )
     assert micro_grade3["sample_count"] == 2
-    assert "member_overrides" in micro_grade3 and "3" in micro_grade3["member_overrides"]
+    assert (
+        "member_overrides" in micro_grade3 and "3" in micro_grade3["member_overrides"]
+    )
 
     run_summary = client.get(
         f"/api/humans/stats/run/{run1}",

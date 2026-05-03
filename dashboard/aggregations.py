@@ -147,8 +147,12 @@ def _distribution_from_counter(
     return result
 
 
-def _build_subset_metrics(rows: Sequence[schemas.RowRecord]) -> List[schemas.SubsetMetrics]:
-    buckets: Dict[str, Dict[str, object]] = {key: _empty_bucket() for key in CORRECTNESS_LABELS.keys()}
+def _build_subset_metrics(
+    rows: Sequence[schemas.RowRecord],
+) -> List[schemas.SubsetMetrics]:
+    buckets: Dict[str, Dict[str, object]] = {
+        key: _empty_bucket() for key in CORRECTNESS_LABELS.keys()
+    }
 
     for row in rows:
         _extend_bucket(buckets["all"], row)
@@ -177,7 +181,11 @@ def _build_subset_metrics(rows: Sequence[schemas.RowRecord]) -> List[schemas.Sub
         reasoning_tokens_summary = _numeric_summary(bucket["reasoning_tokens"])
         cost_summary = _numeric_summary(bucket["cost"])
 
-        points_hist = build_histogram(bucket["points"]) if bucket["points"] else schemas.Histogram()
+        points_hist = (
+            build_histogram(bucket["points"])
+            if bucket["points"]
+            else schemas.Histogram()
+        )
         points_earned_hist = (
             build_histogram(bucket["points_earned"])
             if bucket["points_earned"]
@@ -191,7 +199,9 @@ def _build_subset_metrics(rows: Sequence[schemas.RowRecord]) -> List[schemas.Sub
                 count=int(count),
                 share=_round(share),
                 accuracy=_round(accuracy) if accuracy is not None else None,
-                multimodal_share=_round(multimodal_share) if multimodal_share is not None else None,
+                multimodal_share=_round(multimodal_share)
+                if multimodal_share is not None
+                else None,
                 points_summary=points_summary,
                 points_earned_summary=points_earned_summary,
                 latency_summary=latency_summary,
@@ -226,20 +236,26 @@ def _build_subset_metrics(rows: Sequence[schemas.RowRecord]) -> List[schemas.Sub
 
 
 def compute_aggregates(rows: Sequence[schemas.RowRecord]) -> schemas.AggregatesResponse:
-    breakdown_group: Dict[str, Dict[str, float]] = defaultdict(lambda: {
-        "count": 0,
-        "correct": 0,
-        "points_total": 0.0,
-        "points_earned": 0.0,
-    })
-    breakdown_year: Dict[str, Dict[str, float]] = defaultdict(lambda: {
-        "count": 0,
-        "correct": 0,
-        "points_total": 0.0,
-        "points_earned": 0.0,
-    })
+    breakdown_group: Dict[str, Dict[str, float]] = defaultdict(
+        lambda: {
+            "count": 0,
+            "correct": 0,
+            "points_total": 0.0,
+            "points_earned": 0.0,
+        }
+    )
+    breakdown_year: Dict[str, Dict[str, float]] = defaultdict(
+        lambda: {
+            "count": 0,
+            "correct": 0,
+            "points_total": 0.0,
+            "points_earned": 0.0,
+        }
+    )
 
-    def record_breakdown(target: Dict[str, Dict[str, float]], key: str | None, row: schemas.RowRecord) -> None:
+    def record_breakdown(
+        target: Dict[str, Dict[str, float]], key: str | None, row: schemas.RowRecord
+    ) -> None:
         if not key:
             return
         entry = target[key]
@@ -255,7 +271,9 @@ def compute_aggregates(rows: Sequence[schemas.RowRecord]) -> schemas.AggregatesR
         record_breakdown(breakdown_group, row.group, row)
         record_breakdown(breakdown_year, row.year, row)
 
-    def finalize_breakdown(mapping: Dict[str, Dict[str, float]]) -> Dict[str, schemas.BreakdownEntry]:
+    def finalize_breakdown(
+        mapping: Dict[str, Dict[str, float]],
+    ) -> Dict[str, schemas.BreakdownEntry]:
         result: Dict[str, schemas.BreakdownEntry] = {}
         for key in sorted(mapping.keys(), key=grade_group_sort_key):
             entry = mapping[key]
@@ -270,7 +288,9 @@ def compute_aggregates(rows: Sequence[schemas.RowRecord]) -> schemas.AggregatesR
             )
         return result
 
-    confusion_matrix: Dict[str, Dict[str, int]] = {letter: {p: 0 for p in LETTER_SET} for letter in LETTER_SET}
+    confusion_matrix: Dict[str, Dict[str, int]] = {
+        letter: {p: 0 for p in LETTER_SET} for letter in LETTER_SET
+    }
     predicted_counts: Counter[str] = Counter()
     latency_values: List[float] = []
     token_values: List[float] = []
@@ -300,7 +320,8 @@ def compute_aggregates(rows: Sequence[schemas.RowRecord]) -> schemas.AggregatesR
     subset_metrics = _build_subset_metrics(rows)
 
     warning_toplist = [
-        schemas.WarningBreakdown(warning_type=w, count=c) for w, c in warning_counts.most_common(10)
+        schemas.WarningBreakdown(warning_type=w, count=c)
+        for w, c in warning_counts.most_common(10)
     ]
     return schemas.AggregatesResponse(
         subset_metrics=subset_metrics,
@@ -322,7 +343,9 @@ def build_histogram(values: Sequence[float]) -> schemas.Histogram:
     min_val = values[0]
     max_val = values[-1]
     if math.isclose(min_val, max_val):
-        return schemas.Histogram(bins=[min_val, max_val], counts=[len(values)], min=min_val, max=max_val)
+        return schemas.Histogram(
+            bins=[min_val, max_val], counts=[len(values)], min=min_val, max=max_val
+        )
     bucket_count = min(20, max(5, int(math.sqrt(len(values)))))
     step = (max_val - min_val) / bucket_count or 1.0
     bins = [min_val + i * step for i in range(bucket_count + 1)]
@@ -333,7 +356,9 @@ def build_histogram(values: Sequence[float]) -> schemas.Histogram:
     return schemas.Histogram(bins=bins, counts=counts, min=min_val, max=max_val)
 
 
-def _confusion_for_rows(rows: Mapping[str, schemas.RowRecord] | Sequence[schemas.RowRecord]) -> Dict[str, Dict[str, int]]:
+def _confusion_for_rows(
+    rows: Mapping[str, schemas.RowRecord] | Sequence[schemas.RowRecord],
+) -> Dict[str, Dict[str, int]]:
     matrix = {letter: {p: 0 for p in LETTER_SET} for letter in LETTER_SET}
     if isinstance(rows, Mapping):
         iterable = rows.values()

@@ -7,13 +7,13 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from tools.retry_missing_answers import (
+from tools.retry_missing_answers import (  # noqa: E402
     DetectionStats,
     build_subset_dataset,
     detect_after_merge,
     detect_missing_predictions,
     merge_results,
-)
+)  # noqa: E402
 
 
 def make_results_df() -> pd.DataFrame:
@@ -53,7 +53,9 @@ def make_dataset_df() -> pd.DataFrame:
 
 def test_detect_missing_predictions_counts_invalid():
     df = make_results_df()
-    stats = detect_missing_predictions(df, valid_predictions=["A", "B", "C", "D", "E", "DECLINED"])
+    stats = detect_missing_predictions(
+        df, valid_predictions=["A", "B", "C", "D", "E", "DECLINED"]
+    )
     assert isinstance(stats, DetectionStats)
     assert stats.total_rows == 3
     assert stats.missing_rows == 2
@@ -101,5 +103,7 @@ def test_detect_after_merge_reports_remaining_missing():
         results, retry, question_column="id", missing_ids=["q1", "q3"]
     )
     assert "q3" in unresolved
-    remaining = detect_after_merge(merged, valid_predictions=["A", "B", "C", "D", "E", "DECLINED"])
+    remaining = detect_after_merge(
+        merged, valid_predictions=["A", "B", "C", "D", "E", "DECLINED"]
+    )
     assert remaining == 1

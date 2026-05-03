@@ -524,7 +524,9 @@ class HumanComparisonSummary(BaseModel):
     top_human_wins: List[HumanComparisonTopCell] = Field(default_factory=list)
     best_year: Optional[HumanComparisonBestYear] = None
     best_grade: Optional[HumanComparisonBestGrade] = None
-    threshold_breakdown: List[HumanComparisonThresholdBreakdown] = Field(default_factory=list)
+    threshold_breakdown: List[HumanComparisonThresholdBreakdown] = Field(
+        default_factory=list
+    )
 
 
 class HumanComparisonSummaryResponse(BaseModel):
@@ -615,7 +617,9 @@ class CompareResponse(BaseModel):
     metrics: List[CompareMetricDelta]
     breakdown_deltas: Dict[str, List[CompareMetricDelta]]
     row_deltas: List[CompareRowDelta]
-    confusion_matrices: Dict[str, Dict[str, Dict[str, int]]] = Field(default_factory=dict)
+    confusion_matrices: Dict[str, Dict[str, Dict[str, int]]] = Field(
+        default_factory=dict
+    )
 
 
 class ExportResponse(BaseModel):

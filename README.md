@@ -4,6 +4,7 @@ Känguru Benchmark – LLM Evaluation
 Quickstart (uses uv for environment management)
 
 - Requirements: Python 3.11+, `uv` installed, OpenRouter API key.
+- For NeurIPS 2026 Evaluations & Datasets packaging notes, see `SUBMISSION_READINESS.md`.
 
 Setup
 
@@ -15,7 +16,7 @@ Setup
 
 Input Data
 
-- Store your Kaguru benchmark `.parquet` file anywhere inside or outside the repo (for example `datasets/kaenguru_2024.parquet`).
+- Store your Känguru benchmark `.parquet` file anywhere inside or outside the repo (for example `datasets/kaenguru_2024.parquet`).
 - Pass the path via `--dataset`; relative paths are resolved from the current working directory and `~` is supported.
 - The script validates that the supplied file exists and has a `.parquet` extension before starting the run.
 - Hard-required columns in the dataset (must all be present, values may be `null`/`None`): `id`, `year`, `group`, `points`, `problem_number`, `problem_statement`, `answer`, `multimodal`, `sol_A`, `sol_B`, `sol_C`, `sol_D`, `sol_E`, `question_image`, `sol_A_image_bin`, `sol_B_image_bin`, `sol_C_image_bin`, `sol_D_image_bin`, `sol_E_image_bin`, `associated_images_bin`, `language`.

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import math
 import re
-from typing import Iterable, Optional, Sequence, Tuple
+from typing import Optional, Sequence, Tuple
 
 DECLINED_TOKEN = "DECLINED"
 PENALTY_FACTOR = 0.25
@@ -45,10 +45,7 @@ def extract_grade_numbers(group_value: object) -> Tuple[int, ...]:
     if group_value is None:
         return ()
     text = str(group_value)
-    numbers = [
-        _as_int(match)
-        for match in re.findall(r"\d+", text)
-    ]
+    numbers = [_as_int(match) for match in re.findall(r"\d+", text)]
     return tuple(num for num in numbers if num is not None)
 
 

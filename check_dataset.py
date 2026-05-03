@@ -123,12 +123,14 @@ DATASET_DIR: Optional[str] = None
 # Optional heavy validation
 try:
     from PIL import Image
+
     PIL_AVAILABLE = True
 except Exception:
     PIL_AVAILABLE = False
 
 try:
     import numpy as np
+
     NUMPY_AVAILABLE = True
 except Exception:
     NUMPY_AVAILABLE = False
@@ -210,7 +212,9 @@ def _iter_blob_candidates(value: Any) -> Iterable[Any]:
     yield value
 
 
-_BASE64_CHARS = set("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/=\n\r")
+_BASE64_CHARS = set(
+    "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/=\n\r"
+)
 
 
 def _looks_like_base64(text: str) -> bool:
@@ -293,7 +297,20 @@ def _make_image_ref(value: Any) -> Optional[ImageRef]:
             os.path.sep in text
             or text.startswith(".")
             or text.startswith("~")
-            or lower_text.endswith((".png", ".jpg", ".jpeg", ".gif", ".bmp", ".webp", ".tiff", ".svg", ".heic", ".heif"))
+            or lower_text.endswith(
+                (
+                    ".png",
+                    ".jpg",
+                    ".jpeg",
+                    ".gif",
+                    ".bmp",
+                    ".webp",
+                    ".tiff",
+                    ".svg",
+                    ".heic",
+                    ".heif",
+                )
+            )
         )
         if looks_like_path or os.path.exists(candidate_path):
             exists = os.path.exists(candidate_path)
@@ -355,10 +372,14 @@ class IssueCollector:
     def __init__(self) -> None:
         self.issues: List[Issue] = []
 
-    def error(self, code: str, row_index: Optional[int], row_id: Any, details: str) -> None:
+    def error(
+        self, code: str, row_index: Optional[int], row_id: Any, details: str
+    ) -> None:
         self.issues.append(Issue("error", code, row_index, row_id, details))
 
-    def warn(self, code: str, row_index: Optional[int], row_id: Any, details: str) -> None:
+    def warn(
+        self, code: str, row_index: Optional[int], row_id: Any, details: str
+    ) -> None:
         self.issues.append(Issue("warning", code, row_index, row_id, details))
 
     def counts(self) -> Tuple[int, int]:
@@ -378,12 +399,23 @@ class IssueCollector:
 
 def check_columns(df: pd.DataFrame, issues: IssueCollector) -> None:
     missing = [c for c in REQUIRED_COLUMNS if c not in df.columns]
-    extra = [c for c in df.columns if c not in REQUIRED_COLUMNS and c not in ALLOWED_EXTRA_COLUMNS]
+    extra = [
+        c
+        for c in df.columns
+        if c not in REQUIRED_COLUMNS and c not in ALLOWED_EXTRA_COLUMNS
+    ]
     if missing:
-        issues.error("missing_columns", None, None, f"Missing required columns: {missing}")
+        issues.error(
+            "missing_columns", None, None, f"Missing required columns: {missing}"
+        )
     # Extras are allowed by the evaluator but we surface them for awareness
     if extra:
-        issues.warn("extra_columns", None, None, f"Extra columns present (ignored by evaluator): {extra}")
+        issues.warn(
+            "extra_columns",
+            None,
+            None,
+            f"Extra columns present (ignored by evaluator): {extra}",
+        )
 
 
 def check_uniqueness(df: pd.DataFrame, issues: IssueCollector) -> None:
@@ -392,7 +424,9 @@ def check_uniqueness(df: pd.DataFrame, issues: IssueCollector) -> None:
         if dup_mask.any():
             dup_ids = df.loc[dup_mask, "id"].astype(str).value_counts()
             show = ", ".join([f"{k}×{v}" for k, v in dup_ids.head(10).items()])
-            issues.error("duplicate_ids", None, None, f"Duplicate id values (top 10): {show}")
+            issues.error(
+                "duplicate_ids", None, None, f"Duplicate id values (top 10): {show}"
+            )
 
     # (year, group, problem_number) should generally be unique
     for cols in [("year", "group", "problem_number")]:
@@ -415,8 +449,9 @@ def _letter(x: Any) -> Optional[str]:
     return s if s in LETTER_SET else None
 
 
-def check_rows(df: pd.DataFrame, issues: IssueCollector, *, image_decode_limit: int = 200) -> None:
-    total = len(df)
+def check_rows(
+    df: pd.DataFrame, issues: IssueCollector, *, image_decode_limit: int = 200
+) -> None:
     decoded_images = 0
 
     for idx, row in df.iterrows():
@@ -424,19 +459,29 @@ def check_rows(df: pd.DataFrame, issues: IssueCollector, *, image_decode_limit: 
 
         # Problem statement non-empty
         if not _is_nonempty_text(row.get("problem_statement")):
-            issues.error("empty_problem_statement", idx, rid, "Problem text is empty or whitespace only")
+            issues.error(
+                "empty_problem_statement",
+                idx,
+                rid,
+                "Problem text is empty or whitespace only",
+            )
 
         # Answer letter
         ans = _letter(row.get("answer"))
         if ans is None:
-            issues.error("invalid_answer", idx, rid, "Answer not in {A,B,C,D,E} or missing")
+            issues.error(
+                "invalid_answer", idx, rid, "Answer not in {A,B,C,D,E} or missing"
+            )
 
         # Options: text vs image
         text_ok = all(_is_nonempty_text(row.get(f"sol_{L}")) for L in OPTION_LETTERS)
         option_image_refs: Dict[str, List[ImageRef]] = {
             L: collect_image_refs(row.get(f"sol_{L}_image_bin")) for L in OPTION_LETTERS
         }
-        option_has_image = {L: any(ref.has_payload() for ref in refs) for L, refs in option_image_refs.items()}
+        option_has_image = {
+            L: any(ref.has_payload() for ref in refs)
+            for L, refs in option_image_refs.items()
+        }
         image_ok = all(option_has_image.values())
 
         if not (text_ok or image_ok):
@@ -447,20 +492,37 @@ def check_rows(df: pd.DataFrame, issues: IssueCollector, *, image_decode_limit: 
                 "Need either 5 non-empty text options or 5 image options",
             )
         elif text_ok and image_ok:
-            issues.warn("mixed_options", idx, rid, "Both text and image options present (allowed, FYI)")
+            issues.warn(
+                "mixed_options",
+                idx,
+                rid,
+                "Both text and image options present (allowed, FYI)",
+            )
 
         # Ensure the correct option (if given) actually has content
         if ans:
             if text_ok and not _is_nonempty_text(row.get(f"sol_{ans}")):
-                issues.error("answer_missing_text", idx, rid, f"Solution {ans} text is empty")
+                issues.error(
+                    "answer_missing_text", idx, rid, f"Solution {ans} text is empty"
+                )
             if image_ok and not option_has_image.get(ans, False):
-                issues.error("answer_missing_image", idx, rid, f"Solution {ans} image bytes missing")
+                issues.error(
+                    "answer_missing_image",
+                    idx,
+                    rid,
+                    f"Solution {ans} image bytes missing",
+                )
 
         # Duplicate options within a row (text)
         if text_ok:
             texts = [str(row.get(f"sol_{L}")).strip() for L in OPTION_LETTERS]
             if len(set(texts)) < 5:
-                issues.warn("duplicate_option_texts", idx, rid, "Some option texts are identical")
+                issues.warn(
+                    "duplicate_option_texts",
+                    idx,
+                    rid,
+                    "Some option texts are identical",
+                )
 
         # Multimodal consistency
         mm = _boolish(row.get("multimodal"))
@@ -501,31 +563,52 @@ def check_rows(df: pd.DataFrame, issues: IssueCollector, *, image_decode_limit: 
                 "Image answer options or associated images present while multimodal=False",
             )
         if mm is None:
-            issues.warn("multimodal_nonboolean", idx, rid, f"multimodal value not boolean: {row.get('multimodal')!r}")
+            issues.warn(
+                "multimodal_nonboolean",
+                idx,
+                rid,
+                f"multimodal value not boolean: {row.get('multimodal')!r}",
+            )
 
         # Basic type/range sanity
         year = _as_int(row.get("year"))
         if year is None or year < 1998 or year > 2100:
-            issues.warn("year_out_of_range", idx, rid, f"Suspicious year: {row.get('year')!r}")
+            issues.warn(
+                "year_out_of_range", idx, rid, f"Suspicious year: {row.get('year')!r}"
+            )
 
         pn = _as_int(row.get("problem_number"))
         if pn is None or pn <= 0 or pn > 40:
-            issues.warn("problem_number_range", idx, rid, f"Suspicious problem_number: {row.get('problem_number')!r}")
+            issues.warn(
+                "problem_number_range",
+                idx,
+                rid,
+                f"Suspicious problem_number: {row.get('problem_number')!r}",
+            )
 
         try:
             points = float(row.get("points"))
         except Exception:
             points = None
         if points is None or not (0.0 < points < 10.0):
-            issues.warn("points_range", idx, rid, f"Suspicious points: {row.get('points')!r}")
+            issues.warn(
+                "points_range", idx, rid, f"Suspicious points: {row.get('points')!r}"
+            )
         elif points not in {3.0, 4.0, 5.0}:
-            issues.warn("points_nonstandard", idx, rid, f"Non-standard points value: {points}")
+            issues.warn(
+                "points_nonstandard", idx, rid, f"Non-standard points value: {points}"
+            )
 
         # Language basic sanity (the evaluator defaults to 'de')
         lang_raw = row.get("language")
         lang = str(lang_raw).strip().lower() if _is_nonempty_text(lang_raw) else None
         if lang not in {"de", "en", None}:
-            issues.warn("language_unexpected", idx, rid, f"Unexpected language value: {lang_raw!r}")
+            issues.warn(
+                "language_unexpected",
+                idx,
+                rid,
+                f"Unexpected language value: {lang_raw!r}",
+            )
 
         # Image decode checks (capped for performance)
         if decoded_images < image_decode_limit:
@@ -544,7 +627,12 @@ def check_rows(df: pd.DataFrame, issues: IssueCollector, *, image_decode_limit: 
                     continue
                 decoded_images += 1
                 if not _decode_image_ok(data):
-                    issues.error("image_decode_failed", idx, rid, "Image bytes failed to decode via PIL")
+                    issues.error(
+                        "image_decode_failed",
+                        idx,
+                        rid,
+                        "Image bytes failed to decode via PIL",
+                    )
 
 
 def check_distribution(df: pd.DataFrame, console: Console) -> None:
@@ -562,16 +650,29 @@ def check_distribution(df: pd.DataFrame, console: Console) -> None:
     table.add_column("3pt", justify="right")
     table.add_column("4pt", justify="right")
     table.add_column("5pt", justify="right")
-    for (year, group), gdf in list(grp)[:20]:  # only first 20 groups to keep output short
+    for (year, group), gdf in list(grp)[
+        :20
+    ]:  # only first 20 groups to keep output short
         counts = gdf["points"].value_counts(dropna=False)
-        c3, c4, c5 = int(counts.get(3.0, 0) + counts.get(3, 0)), int(counts.get(4.0, 0) + counts.get(4, 0)), int(counts.get(5.0, 0) + counts.get(5, 0))
+        c3, c4, c5 = (
+            int(counts.get(3.0, 0) + counts.get(3, 0)),
+            int(counts.get(4.0, 0) + counts.get(4, 0)),
+            int(counts.get(5.0, 0) + counts.get(5, 0)),
+        )
         table.add_row(str(year), str(group), str(len(gdf)), str(c3), str(c4), str(c5))
     console.print(table)
 
 
-def humanize_issues(issues: IssueCollector, console: Console, *, show_examples: int = 5) -> None:
+def humanize_issues(
+    issues: IssueCollector, console: Console, *, show_examples: int = 5
+) -> None:
     error_count, warn_count = issues.counts()
-    console.print(Panel.fit(Text(f"Errors: {error_count}   Warnings: {warn_count}", style="bold"), title="Summary"))
+    console.print(
+        Panel.fit(
+            Text(f"Errors: {error_count}   Warnings: {warn_count}", style="bold"),
+            title="Summary",
+        )
+    )
 
     by_code = issues.by_code()
     # Sort severity: errors first, then warnings; within, by frequency desc
@@ -586,16 +687,24 @@ def humanize_issues(issues: IssueCollector, console: Console, *, show_examples: 
         table.add_column("row_id")
         table.add_column("details")
         for i in bucket[:show_examples]:
-            table.add_row("-" if i.row_index is None else str(i.row_index), str(i.row_id), i.details)
+            table.add_row(
+                "-" if i.row_index is None else str(i.row_index),
+                str(i.row_id),
+                i.details,
+            )
         if len(bucket) > show_examples:
             table.add_row("…", "…", f"(+{len(bucket) - show_examples} more)")
         console.print(table)
 
 
 def main(argv: Optional[List[str]] = None) -> int:
-    parser = argparse.ArgumentParser(description="Sanity check a Känguru dataset file (.parquet or .jsonl)")
+    parser = argparse.ArgumentParser(
+        description="Sanity check a Känguru dataset file (.parquet or .jsonl)"
+    )
     parser.add_argument("dataset", help="Path to dataset file (.parquet or .jsonl)")
-    parser.add_argument("--limit", type=int, default=None, help="Sample N rows for quick checks")
+    parser.add_argument(
+        "--limit", type=int, default=None, help="Sample N rows for quick checks"
+    )
     parser.add_argument(
         "--full-images",
         action="store_true",
@@ -625,7 +734,9 @@ def main(argv: Optional[List[str]] = None) -> int:
     ext = os.path.splitext(path)[1].lower()
     supported_exts = {".parquet", ".jsonl", ".json"}
     if ext not in supported_exts:
-        console.print(f"[red]Unsupported dataset format (expected .parquet or .jsonl):[/red] {path}")
+        console.print(
+            f"[red]Unsupported dataset format (expected .parquet or .jsonl):[/red] {path}"
+        )
         return 1
 
     # Load

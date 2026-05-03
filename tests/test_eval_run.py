@@ -1,8 +1,7 @@
 import json
-import os
 import sys
-from pathlib import Path
 from io import BytesIO
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 import httpx
@@ -119,6 +118,7 @@ def run_eval(
 ):
     # Import module fresh
     import importlib.util
+
     monkeypatch.syspath_prepend(str(ROOT))
     mod_path = ROOT / "eval_run.py"
     spec = importlib.util.spec_from_file_location("eval_run", mod_path)
@@ -200,8 +200,13 @@ def test_answer_json_success(monkeypatch, tmp_path):
     payload = {
         "id": "gen_1",
         "model": "openai/gpt-5",
-        "choices": [{"message": {"content": "{\"answer\":\"A\"}"}}],
-        "usage": {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15, "cost": 0.002},
+        "choices": [{"message": {"content": '{"answer":"A"}'}}],
+        "usage": {
+            "prompt_tokens": 10,
+            "completion_tokens": 5,
+            "total_tokens": 15,
+            "cost": 0.002,
+        },
     }
     run_dir = run_eval(
         monkeypatch,
@@ -218,7 +223,7 @@ def test_answer_json_success(monkeypatch, tmp_path):
     assert len(df) == 1
     row = df.iloc[0]
     assert row["predicted"] == "A"
-    assert row["is_correct"] == True
+    assert bool(row["is_correct"]) is True
     assert row["reasoning_mode"] == "self-directed"
 
     config = json.loads((run_dir / "config.json").read_text())
@@ -250,7 +255,9 @@ def test_no_live_dashboard_flag(monkeypatch, tmp_path):
     )
 
     events_file = run_dir / "usage_events.jsonl"
-    assert events_file.exists(), "usage_events.jsonl should be created when events logging is enabled"
+    assert events_file.exists(), (
+        "usage_events.jsonl should be created when events logging is enabled"
+    )
     with events_file.open("r", encoding="utf-8") as f:
         lines = [line for line in f if line.strip()]
     assert lines, "usage events log should contain at least one entry"
@@ -350,7 +357,11 @@ def test_final_line_declined(monkeypatch, tmp_path):
         "id": "gen_declined_line",
         "model": "openai/gpt-5",
         "choices": [
-            {"message": {"content": "Unsure about this problem.\nFinal answer: Declined."}}
+            {
+                "message": {
+                    "content": "Unsure about this problem.\nFinal answer: Declined."
+                }
+            }
         ],
     }
     run_dir = run_eval(
@@ -376,7 +387,11 @@ def test_declined_phrase_detection(monkeypatch, tmp_path):
         "id": "gen_declined_phrase",
         "model": "openai/gpt-5",
         "choices": [
-            {"message": {"content": "After reviewing the options, I choose not to answer."}}
+            {
+                "message": {
+                    "content": "After reviewing the options, I choose not to answer."
+                }
+            }
         ],
     }
     run_dir = run_eval(
@@ -398,7 +413,11 @@ def test_declined_phrase_german(monkeypatch, tmp_path):
         "id": "gen_declined_de",
         "model": "openai/gpt-5",
         "choices": [
-            {"message": {"content": "Diese Aufgabe ist mehrdeutig; ich entscheide mich, nicht zu antworten."}}
+            {
+                "message": {
+                    "content": "Diese Aufgabe ist mehrdeutig; ich entscheide mich, nicht zu antworten."
+                }
+            }
         ],
     }
     run_dir = run_eval(
@@ -433,9 +452,6 @@ def test_request_payload_has_no_response_format(monkeypatch, tmp_path):
     first_payload = captured[0]
     assert "response_format" not in first_payload
     assert "reasoning" not in first_payload
-
-
-
 
 
 def test_regex_fallback_and_missing_usage(monkeypatch, tmp_path):
@@ -685,12 +701,19 @@ def test_text_only_cli_filters_multimodal(monkeypatch, tmp_path):
 
 
 def test_image_decode_warning(monkeypatch, tmp_path):
-    dataset = write_parquet(tmp_path, [make_row(6, with_images=True, invalid_question=True)])
+    dataset = write_parquet(
+        tmp_path, [make_row(6, with_images=True, invalid_question=True)]
+    )
     payload = {
         "id": "gen_6",
         "model": "openai/gpt-5",
-        "choices": [{"message": {"content": "{\"answer\":\"A\"}"}}],
-        "usage": {"prompt_tokens": 8, "completion_tokens": 4, "total_tokens": 12, "cost": 0.001},
+        "choices": [{"message": {"content": '{"answer":"A"}'}}],
+        "usage": {
+            "prompt_tokens": 8,
+            "completion_tokens": 4,
+            "total_tokens": 12,
+            "cost": 0.001,
+        },
     }
     run_dir = run_eval(
         monkeypatch,

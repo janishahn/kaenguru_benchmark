@@ -78,13 +78,23 @@ class RunRecord:
             **self.to_summary().model_dump(),
             config=self.config,
             paths=schemas.RunPaths(
-                results_json=str(self.paths.results_json) if self.paths.results_json else None,
-                results_jsonl=str(self.paths.results_jsonl) if self.paths.results_jsonl else None,
-                results_parquet=str(self.paths.results_parquet) if self.paths.results_parquet else None,
+                results_json=str(self.paths.results_json)
+                if self.paths.results_json
+                else None,
+                results_jsonl=str(self.paths.results_jsonl)
+                if self.paths.results_jsonl
+                else None,
+                results_parquet=str(self.paths.results_parquet)
+                if self.paths.results_parquet
+                else None,
                 metrics_json=str(self.paths.metrics),
                 config_json=str(self.paths.config),
-                raw_responses_jsonl=str(self.paths.raw_responses) if self.paths.raw_responses else None,
-                failures_jsonl=str(self.paths.failures) if self.paths.failures else None,
+                raw_responses_jsonl=str(self.paths.raw_responses)
+                if self.paths.raw_responses
+                else None,
+                failures_jsonl=str(self.paths.failures)
+                if self.paths.failures
+                else None,
             ),
         )
 
@@ -138,7 +148,9 @@ class RunIndex:
             dataset_name = Path(config.args.dataset).name
 
         model_id = config.model.id or (config.args.model if config.args else None)
-        model_label = slug_to_label(model_id, self._models_registry) if model_id else None
+        model_label = (
+            slug_to_label(model_id, self._models_registry) if model_id else None
+        )
         if not model_label and config.model.label:
             model_label = config.model.label
         if model_id and not config.model.id:
@@ -164,7 +176,11 @@ class RunIndex:
         elif files.results_json is not None:
             results_source = "json"
 
-        has_failures = files.failures is not None and files.failures.exists() and files.failures.stat().st_size > 0
+        has_failures = (
+            files.failures is not None
+            and files.failures.exists()
+            and files.failures.stat().st_size > 0
+        )
         ts = parse_run_timestamp(run_id)
 
         # Create a temporary record to pass to the calculation method
@@ -190,7 +206,10 @@ class RunIndex:
             temp_record.metrics.total_points_earned = total_points
 
         # Backfill mean_completion_tokens for legacy runs if missing but results have completion_tokens
-        if getattr(metrics, "mean_completion_tokens", None) is None and metrics.answered_count > 0:
+        if (
+            getattr(metrics, "mean_completion_tokens", None) is None
+            and metrics.answered_count > 0
+        ):
             backfilled_mean = self._calculate_mean_completion_tokens_direct(files)
             if backfilled_mean is not None:
                 temp_record.metrics.mean_completion_tokens = backfilled_mean
@@ -201,12 +220,16 @@ class RunIndex:
         candidate = directory / name
         return candidate if candidate.exists() else None
 
-    def _calculate_mean_completion_tokens_direct(self, paths: RunFilePaths) -> Optional[float]:
+    def _calculate_mean_completion_tokens_direct(
+        self, paths: RunFilePaths
+    ) -> Optional[float]:
         """Compute mean of completion_tokens across answered rows directly from results files.
 
         Returns None if not available.
         """
-        results_path = paths.results_jsonl or paths.results_json or paths.results_parquet
+        results_path = (
+            paths.results_jsonl or paths.results_json or paths.results_parquet
+        )
         if not results_path:
             return None
         total = 0
@@ -268,10 +291,16 @@ class RunIndex:
     # ------------------------------------------------------------------
     # Accessors
     # ------------------------------------------------------------------
-    def list_runs(self, filters: Optional[schemas.RunOverviewFilterParams] = None) -> List[schemas.RunSummary]:
+    def list_runs(
+        self, filters: Optional[schemas.RunOverviewFilterParams] = None
+    ) -> List[schemas.RunSummary]:
         records = list(self._runs.values())
         if filters:
-            records = [record for record in records if self._run_matches_overview_filters(record, filters)]
+            records = [
+                record
+                for record in records
+                if self._run_matches_overview_filters(record, filters)
+            ]
 
         key_lookup = {
             "timestamp": lambda r: r.timestamp_dt or datetime.min,
@@ -279,7 +308,9 @@ class RunIndex:
             "answered": lambda r: r.metrics.answered_count,
             "failed": lambda r: r.metrics.failed_count,
         }
-        sort_key = key_lookup.get(filters.sort_by if filters else "timestamp", key_lookup["timestamp"])
+        sort_key = key_lookup.get(
+            filters.sort_by if filters else "timestamp", key_lookup["timestamp"]
+        )
         reverse = (filters.sort_dir if filters else "desc").lower() == "desc"
 
         records.sort(key=sort_key, reverse=reverse)
@@ -294,15 +325,30 @@ class RunIndex:
             return False
         if filters.dataset and (record.dataset_name not in filters.dataset):
             return False
-        if filters.reasoning_mode and (record.reasoning_mode not in filters.reasoning_mode):
+        if filters.reasoning_mode and (
+            record.reasoning_mode not in filters.reasoning_mode
+        ):
             return False
-        if filters.results_source and (record.results_source not in filters.results_source):
+        if filters.results_source and (
+            record.results_source not in filters.results_source
+        ):
             return False
-        if filters.has_failures is not None and record.has_failures != filters.has_failures:
+        if (
+            filters.has_failures is not None
+            and record.has_failures != filters.has_failures
+        ):
             return False
         if filters.q:
             needle = filters.q.lower()
-            haystacks = filter(None, [record.run_id, record.model_label, record.model_id, record.dataset_name])
+            haystacks = filter(
+                None,
+                [
+                    record.run_id,
+                    record.model_label,
+                    record.model_id,
+                    record.dataset_name,
+                ],
+            )
             if not any(needle in value.lower() for value in haystacks):
                 return False
         if filters.date_from:
@@ -328,7 +374,9 @@ class RunIndex:
 
         records_active = records_all
         if filters:
-            records_active = [r for r in records_all if self._run_matches_overview_filters(r, filters)]
+            records_active = [
+                r for r in records_all if self._run_matches_overview_filters(r, filters)
+            ]
 
         def build_options(
             total_counter: Counter[str],
@@ -340,7 +388,9 @@ class RunIndex:
                 options.append(
                     schemas.FacetOption(
                         value=value,
-                        label=label_lookup.get(value, value.title() if value else "Unknown"),
+                        label=label_lookup.get(
+                            value, value.title() if value else "Unknown"
+                        ),
                         total=total_counter.get(value, 0),
                         active=active_counter.get(value, 0),
                     )
@@ -358,25 +408,41 @@ class RunIndex:
         model_labels = {mid: label_for_model(mid) for mid in model_total}
 
         dataset_total = Counter(r.dataset_name for r in records_all if r.dataset_name)
-        dataset_active = Counter(r.dataset_name for r in records_active if r.dataset_name)
+        dataset_active = Counter(
+            r.dataset_name for r in records_active if r.dataset_name
+        )
         dataset_labels = {name: name for name in dataset_total}
 
-        reasoning_total = Counter(r.reasoning_mode for r in records_all if r.reasoning_mode)
-        reasoning_active = Counter(r.reasoning_mode for r in records_active if r.reasoning_mode)
+        reasoning_total = Counter(
+            r.reasoning_mode for r in records_all if r.reasoning_mode
+        )
+        reasoning_active = Counter(
+            r.reasoning_mode for r in records_active if r.reasoning_mode
+        )
         reasoning_labels = {mode: mode for mode in reasoning_total}
 
-        source_total = Counter(r.results_source for r in records_all if r.results_source)
-        source_active = Counter(r.results_source for r in records_active if r.results_source)
+        source_total = Counter(
+            r.results_source for r in records_all if r.results_source
+        )
+        source_active = Counter(
+            r.results_source for r in records_active if r.results_source
+        )
         source_labels = {src: src.upper() for src in source_total}
 
-        failure_total = Counter("true" if r.has_failures else "false" for r in records_all)
-        failure_active = Counter("true" if r.has_failures else "false" for r in records_active)
+        failure_total = Counter(
+            "true" if r.has_failures else "false" for r in records_all
+        )
+        failure_active = Counter(
+            "true" if r.has_failures else "false" for r in records_active
+        )
         failure_labels = {"true": "Has failures", "false": "No failures"}
 
         return schemas.RunOverviewFacets(
             models=build_options(model_total, model_active, model_labels),
             datasets=build_options(dataset_total, dataset_active, dataset_labels),
-            reasoning_modes=build_options(reasoning_total, reasoning_active, reasoning_labels),
+            reasoning_modes=build_options(
+                reasoning_total, reasoning_active, reasoning_labels
+            ),
             results_sources=build_options(source_total, source_active, source_labels),
             has_failures=build_options(failure_total, failure_active, failure_labels),
         )
@@ -453,7 +519,9 @@ class RunIndex:
                 start_points_total += start_bonus
 
         # Determine which results file to use
-        results_path = paths.results_jsonl or paths.results_json or paths.results_parquet
+        results_path = (
+            paths.results_jsonl or paths.results_json or paths.results_parquet
+        )
         if not results_path:
             return 0.0
 
@@ -531,7 +599,9 @@ class RunIndex:
             data["warnings"] = None
         return schemas.RowRecord.model_validate(data)
 
-    def row_matches_filters(self, row: schemas.RowRecord, filters: schemas.ResultFilterParams) -> bool:
+    def row_matches_filters(
+        self, row: schemas.RowRecord, filters: schemas.ResultFilterParams
+    ) -> bool:
         if filters.group and (row.group not in filters.group):
             return False
         if filters.year and (row.year not in filters.year):
@@ -539,7 +609,9 @@ class RunIndex:
         if filters.language and (row.language not in filters.language):
             return False
         if filters.multimodal is not None:
-            row_multimodal = bool(row.multimodal) if row.multimodal is not None else False
+            row_multimodal = (
+                bool(row.multimodal) if row.multimodal is not None else False
+            )
             if row_multimodal != filters.multimodal:
                 return False
         if filters.correctness:
@@ -554,15 +626,25 @@ class RunIndex:
             pred = row.predicted.upper() if row.predicted else None
             if pred not in predicted_values:
                 return False
-        if filters.reasoning_mode and (row.reasoning_mode not in filters.reasoning_mode):
+        if filters.reasoning_mode and (
+            row.reasoning_mode not in filters.reasoning_mode
+        ):
             return False
         if not self._within_bounds(row.points, filters.points_min, filters.points_max):
             return False
-        if not self._within_bounds(row.latency_ms, filters.latency_min, filters.latency_max):
+        if not self._within_bounds(
+            row.latency_ms, filters.latency_min, filters.latency_max
+        ):
             return False
-        if not self._within_bounds(row.total_tokens, filters.tokens_min, filters.tokens_max):
+        if not self._within_bounds(
+            row.total_tokens, filters.tokens_min, filters.tokens_max
+        ):
             return False
-        if not self._within_bounds(row.reasoning_tokens, filters.reasoning_tokens_min, filters.reasoning_tokens_max):
+        if not self._within_bounds(
+            row.reasoning_tokens,
+            filters.reasoning_tokens_min,
+            filters.reasoning_tokens_max,
+        ):
             return False
         if not self._within_bounds(row.cost_usd, filters.cost_min, filters.cost_max):
             return False
@@ -593,8 +675,14 @@ class RunIndex:
             return False
         return True
 
-    def load_results_page(self, run_id: str, filters: schemas.ResultFilterParams) -> schemas.ResultsPage:
-        rows = [row for row in self.iter_results(run_id) if self.row_matches_filters(row, filters)]
+    def load_results_page(
+        self, run_id: str, filters: schemas.ResultFilterParams
+    ) -> schemas.ResultsPage:
+        rows = [
+            row
+            for row in self.iter_results(run_id)
+            if self.row_matches_filters(row, filters)
+        ]
         reverse = filters.sort_dir.lower() == "desc"
         key = self._sort_key(filters.sort_by)
         rows.sort(key=key, reverse=reverse)
@@ -602,14 +690,21 @@ class RunIndex:
         start = (filters.page - 1) * filters.page_size
         end = start + filters.page_size
         items = rows[start:end]
-        return schemas.ResultsPage(items=items, total=total, page=filters.page, page_size=filters.page_size)
+        return schemas.ResultsPage(
+            items=items, total=total, page=filters.page, page_size=filters.page_size
+        )
 
     def _sort_key(self, field_name: str):
         lookup = {
             "id": lambda r: r.id,
-            "year": lambda r: (r.year or ""),
+            "year": lambda r: r.year or "",
             "group": lambda r: grade_group_sort_key(r.group),
-            "problem_number": lambda r: int(r.problem_number) if isinstance(r.problem_number, (int, float)) or (isinstance(r.problem_number, str) and r.problem_number.isdigit()) else (r.problem_number or ""),
+            "problem_number": lambda r: (
+                int(r.problem_number)
+                if isinstance(r.problem_number, (int, float))
+                or (isinstance(r.problem_number, str) and r.problem_number.isdigit())
+                else (r.problem_number or "")
+            ),
             "points": lambda r: r.points or 0.0,
             "is_correct": lambda r: 1 if r.is_correct else 0,
             "latency_ms": lambda r: r.latency_ms or 0.0,
@@ -623,12 +718,18 @@ class RunIndex:
     # ------------------------------------------------------------------
     # Aggregations
     # ------------------------------------------------------------------
-    def get_aggregates(self, run_id: str, filters: schemas.ResultFilterParams) -> schemas.AggregatesResponse:
+    def get_aggregates(
+        self, run_id: str, filters: schemas.ResultFilterParams
+    ) -> schemas.AggregatesResponse:
         cache_key = (run_id, filters.cache_key)
         cached = self._aggregate_cache.get(cache_key)
         if cached:
             return cached
-        rows = [row for row in self.iter_results(run_id) if self.row_matches_filters(row, filters)]
+        rows = [
+            row
+            for row in self.iter_results(run_id)
+            if self.row_matches_filters(row, filters)
+        ]
         aggregates = aggregations.compute_aggregates(rows)
         self._aggregate_cache[cache_key] = aggregates
         return aggregates
@@ -656,7 +757,7 @@ class RunIndex:
     # Facets
     # ------------------------------------------------------------------
     def get_facets(self, run_id: str) -> schemas.FilterFacets:
-        record = self.get_run(run_id)
+        self.get_run(run_id)
         groups: set[str] = set()
         years: set[str] = set()
         languages: set[str] = set()

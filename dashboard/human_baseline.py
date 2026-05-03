@@ -242,7 +242,9 @@ class HumanYear:
             return []
         return selected
 
-    def aggregate_grades(self, grade_ids: Sequence[str], aggregate_id: str, label: str) -> Optional[HumanGradeStats]:
+    def aggregate_grades(
+        self, grade_ids: Sequence[str], aggregate_id: str, label: str
+    ) -> Optional[HumanGradeStats]:
         if not grade_ids:
             return None
         reference = self.grades[grade_ids[0]]
@@ -350,13 +352,17 @@ class HumanBaselineIndex:
                 schemas.HumanYearListEntry(
                     year=human_year.year,
                     locale=human_year.locale,
-                    grades=[_grade_to_schema(grade) for grade in human_year.list_grades()],
+                    grades=[
+                        _grade_to_schema(grade) for grade in human_year.list_grades()
+                    ],
                     ui_groups=human_year.ui_groups,
                 )
             )
         return entries
 
-    def percentile_response(self, year: int, grade_id: str, score: float) -> Optional[schemas.HumanPercentileResponse]:
+    def percentile_response(
+        self, year: int, grade_id: str, score: float
+    ) -> Optional[schemas.HumanPercentileResponse]:
         try:
             grade = self.get_year(year).grade(grade_id)
         except KeyError:
@@ -375,12 +381,17 @@ class HumanBaselineIndex:
             notes=[],
         )
 
-    def cdf_response(self, year: int, grade_id: str) -> Optional[schemas.HumanCDFResponse]:
+    def cdf_response(
+        self, year: int, grade_id: str
+    ) -> Optional[schemas.HumanCDFResponse]:
         try:
             grade = self.get_year(year).grade(grade_id)
         except KeyError:
             return None
-        points = [schemas.HumanCDFPoint(score=score, percentile=percentile) for score, percentile in grade.cdf_points]
+        points = [
+            schemas.HumanCDFPoint(score=score, percentile=percentile)
+            for score, percentile in grade.cdf_points
+        ]
         return schemas.HumanCDFResponse(
             year=year,
             grade_id=grade_id,
@@ -397,7 +408,10 @@ def _build_human_year(raw: RawHumanBaseline) -> HumanYear:
             id=bin_spec.id,
             label=bin_spec.label_pdf,
             default_range=_range_to_dataclass(bin_spec.range_default),
-            ranges_by_grade={gid: _range_to_dataclass(rng) for gid, rng in bin_spec.ranges_by_grade.items()},
+            ranges_by_grade={
+                gid: _range_to_dataclass(rng)
+                for gid, rng in bin_spec.ranges_by_grade.items()
+            },
         )
         for bin_spec in raw.bins
     ]
@@ -495,11 +509,15 @@ def _build_grade_stats(
 
 
 def _range_to_dataclass(rng: RangeSpec) -> HumanBinRange:
-    return HumanBinRange(min=float(rng.min), max=float(rng.max), inclusive=str(rng.inclusive))
+    return HumanBinRange(
+        min=float(rng.min), max=float(rng.max), inclusive=str(rng.inclusive)
+    )
 
 
 def _range_to_schema(range_obj: HumanBinRange) -> schemas.HumanBinRange:
-    return schemas.HumanBinRange(min=range_obj.min, max=range_obj.max, inclusive=range_obj.inclusive)
+    return schemas.HumanBinRange(
+        min=range_obj.min, max=range_obj.max, inclusive=range_obj.inclusive
+    )
 
 
 def _bin_to_schema(bin_obj: HumanBin) -> schemas.HumanBin:
@@ -507,7 +525,9 @@ def _bin_to_schema(bin_obj: HumanBin) -> schemas.HumanBin:
         id=bin_obj.id,
         label=bin_obj.label,
         range_default=_range_to_schema(bin_obj.default_range),
-        ranges_by_grade={gid: _range_to_schema(rng) for gid, rng in bin_obj.ranges_by_grade.items()},
+        ranges_by_grade={
+            gid: _range_to_schema(rng) for gid, rng in bin_obj.ranges_by_grade.items()
+        },
     )
 
 
@@ -531,9 +551,16 @@ def _human_year_to_schema(human_year: HumanYear) -> schemas.HumanYearSummary:
         locale=human_year.locale,
         grades=[_grade_to_schema(grade) for grade in human_year.list_grades()],
         bins=[_bin_to_schema(bin_obj) for bin_obj in human_year.bins],
-        counts_by_grade={gid: list(human_year.grades[gid].counts) for gid in human_year.grade_ids()},
-        totals_by_grade={gid: human_year.grades[gid].total_count for gid in human_year.grade_ids()},
-        avg_score_by_grade={gid: human_year.grades[gid].avg_score_reported for gid in human_year.grade_ids()},
+        counts_by_grade={
+            gid: list(human_year.grades[gid].counts) for gid in human_year.grade_ids()
+        },
+        totals_by_grade={
+            gid: human_year.grades[gid].total_count for gid in human_year.grade_ids()
+        },
+        avg_score_by_grade={
+            gid: human_year.grades[gid].avg_score_reported
+            for gid in human_year.grade_ids()
+        },
         ui_groups=human_year.ui_groups,
         source=human_year.source,
     )
